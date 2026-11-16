@@ -19,7 +19,12 @@ from ...utils.unrealized_pnl_tracker import UnrealizedPnLTracker
 from ..analysis.enhanced_technical_analyzer import EnhancedTechnicalAnalyzer
 from ..analysis.trend_analyzer import EnhancedTrendAnalyzer
 from ..client import OllamaError, get_llm_client
-from ..decisions import DecisionError, validate_decision
+from ..decisions import (
+    EXPLANATION_INSTRUCTIONS,
+    DecisionError,
+    format_decision_reasoning,
+    validate_decision,
+)
 from ..memory import DecisionMemory, digest, prompt_budget
 from ...backtesting.gates import json_value
 from .base import (
@@ -2340,6 +2345,14 @@ class LLMSmartStrategy(TradingStrategy):
                     "asof": asof,
                     "cash": self.cash,
                     "shares": self.shares,
+                    "observation_timeframe": "daily bars through " + asof,
+                    "macd_cross": comprehensive_context.get("macd_analysis", {}).get("macd_cross", "unknown"),
+                    "technical_facts": {
+                        "rsi": comprehensive_context.get("momentum_indicators", {}).get("rsi"),
+                        "adx": comprehensive_context.get("trend_analysis", {}).get("adx_value"),
+                        "resistance": comprehensive_context.get("support_resistance", {}).get("nearest_resistance"),
+                        "support": comprehensive_context.get("support_resistance", {}).get("nearest_support"),
+                    },
                     "position": str(self.current_position),
                     "current": {
                         key: current_data[key]
@@ -2366,18 +2379,19 @@ class LLMSmartStrategy(TradingStrategy):
             budget = prompt_budget(config.num_ctx, config.max_tokens)
             prompt, receipt = self.memory.assemble(
                 asof=asof,
-                instructions=self.strategy_prompt,
+                instructions=self.strategy_prompt + "\n" + EXPLANATION_INSTRUCTIONS,
                 working=working,
                 evidence=prompt,
                 query=self.owner_question,
-                budget=budget - 400,
+                budget=budget - 900,
             )
 
             # End the prompt with the output task, after retrieved evidence.
             prompt += (
-                "\nReturn only decision JSON: action, confidence, risk_level, reasoning, expected_outcome. "
-                "Do not return the working-state object. HOLD with zero shares means waiting. "
-                "MACD above signal does not prove a new crossover.\n"
+                "\nReturn decision JSON with action, confidence, risk_level, reasoning, expected_outcome, explanation. "
+                "Include all four explanation sections specified above. State observed facts separately from "
+                "interpretation and forecasts; distinguish timeframes. Conditional SELL may follow a future BUY, "
+                "but requires position long. Never report an anticipated crossover as observed.\n"
             )
             # Call LLM
             print(f"🤖 Calling LLM...")
@@ -2389,7 +2403,7 @@ class LLMSmartStrategy(TradingStrategy):
                 attempts.append(response.content)
                 decision = self._parse_llm_response(response.content)
                 try:
-                    validate_decision(decision)
+                    validate_decision(decision, context=working)
                     break
                 except DecisionError as exc:
                     if attempt:
@@ -2401,8 +2415,8 @@ class LLMSmartStrategy(TradingStrategy):
                         ) from exc
                     # A bounded same-stage retry; never manufacture a HOLD fallback.
                     prompt += (
-                        "\nCorrection: return all five fields with numeric confidence and concrete "
-                        "English reasoning and expected_outcome. Do not copy placeholder text.\n"
+                        "\nCorrection: " + str(exc)[:360] +
+                        " Return the complete decision and all explanation sections; retain concrete English reasoning.\n"
                     )
             receipt["attempts"] = len(attempts)
             receipt["final_prompt_sha256"] = digest(prompt)
@@ -2417,8 +2431,9 @@ class LLMSmartStrategy(TradingStrategy):
                     "date": current_date,
                     "events": events,
                     "memory": receipt,
+                    "context": working,
                     "decision": decision,
-                    "reasoning": decision.get("reasoning", "") if decision else "",
+                    "reasoning": format_decision_reasoning(decision) if decision else "",
                 }
             )
 
@@ -3401,7 +3416,8 @@ Position held: {"Position held" if self.current_position else "No position"}"""
                     "prompt_version": self.strategy_type,
                     "decision_type": llm_decision.get("action", "HOLD"),
                     "confidence": llm_decision.get("confidence", 0.0),
-                    "reasoning": llm_decision.get("reasoning", ""),
+                    "reasoning": format_decision_reasoning(llm_decision),
+                    "explanation": llm_decision.get("explanation"),
                     "key_factors": llm_decision.get("factors", []),
                     "raw_response": llm_decision.get("raw_response", ""),
                 }

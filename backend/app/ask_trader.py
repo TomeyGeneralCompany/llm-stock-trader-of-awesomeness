@@ -13,6 +13,7 @@ import pandas as pd
 from app.backtesting.gates import Stage, frame_records, json_value, validate_output
 from app.config import settings
 from app.llm.client import get_llm_client
+from app.llm.decisions import format_decision_reasoning
 from app.llm.strategies.base import StrategyConfig
 from app.llm.strategies.llm_strategy import LLMSmartStrategy
 from app.stage_resources import stage_resources
@@ -138,6 +139,15 @@ def write_response(
     (directory / "response.json").write_text(
         json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    display_answer = result.get("answer", result.get("error", ""))
+    decision = result.get("decision")
+    if decision and decision.get("explanation"):
+        display_answer = (
+            f"Action: {decision['action']} | Confidence: {decision['confidence']} | Risk: {decision['risk_level']}\n\n"
+            + format_decision_reasoning(decision)
+            + "\n\nExpected outcome: "
+            + decision["expected_outcome"]
+        )
     text = (
         "# Ask the Trader\n\n"
         f"**Status:** {html.escape(result['status'])}  \n"
@@ -147,9 +157,7 @@ def write_response(
         f"{html.escape(result.get('data_source', ''))}\n\n"
         "This run uses GitHub's runner. It is a response probe, not a laptop benchmark or a full backtest.\n\n"
         "## Your question\n\n<pre>" + html.escape(result["prompt"]) + "</pre>\n\n"
-        "## Response\n\n<pre>"
-        + html.escape(result.get("answer", result.get("error", "")))
-        + "</pre>\n"
+        "## Response\n\n<pre>" + html.escape(display_answer) + "</pre>\n"
     )
     if "memory" in result:
         memory = result["memory"]

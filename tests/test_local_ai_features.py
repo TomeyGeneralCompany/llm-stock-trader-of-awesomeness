@@ -15,6 +15,7 @@ from app.api.v1.endpoints.daily_feedback import generate_daily_improvement_analy
 from app.llm.client import OllamaError
 from app.llm.strategies.base import StrategyConfig
 from app.llm.strategies.llm_strategy import LLMSmartStrategy
+from decision_fixtures import explained
 from fastapi import HTTPException
 
 
@@ -29,13 +30,13 @@ def test_trading_feedback_and_review_use_local_qwen(monkeypatch):
         requests.append(body)
         if body.get("format") == "json":
             content = json.dumps(
-                {
+                explained({
                     "action": "HOLD",
                     "confidence": 0.8,
                     "reasoning": "Wait for confirmation.",
                     "risk_level": "medium",
                     "expected_outcome": "Continue observing the trend.",
-                }
+                }, body["messages"][0]["content"])
             )
         elif "Strategy file modification suggestions" in body["messages"][0]["content"]:
             content = (
@@ -90,7 +91,9 @@ def test_trading_feedback_and_review_use_local_qwen(monkeypatch):
     )
     assert decision is not None
     assert decision["action"] == "HOLD"
-    assert strategy.decision_log[-1]["reasoning"] == "Wait for confirmation."
+    assert strategy.decision_log[-1]["reasoning"].startswith("Wait for confirmation.")
+    assert "Observed state" in strategy.decision_log[-1]["reasoning"]
+    assert "Conditional actions" in strategy.decision_log[-1]["reasoning"]
 
     feedback = asyncio.run(
         generate_daily_improvement_analysis(

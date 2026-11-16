@@ -6,6 +6,7 @@ import sqlite3
 import httpx
 import pytest
 from app import ask_trader
+from decision_fixtures import explained
 from app.backtesting.gates import GateError, Stage, validate_output
 from app.llm.client import OllamaError, get_llm_client
 from app.llm.decisions import DecisionError
@@ -126,7 +127,15 @@ def test_real_sample_placeholder_gets_one_correction_then_validates(
         requests.append(json.loads(request.content))
         decision = VALID if corrected and len(requests) == 2 else PLACEHOLDER
         return httpx.Response(
-            200, json={"done": True, "message": {"content": json.dumps(decision)}}
+            200,
+            json={
+                "done": True,
+                "message": {
+                    "content": json.dumps(
+                        explained(decision, requests[-1]["messages"][0]["content"])
+                    )
+                },
+            },
         )
 
     monkeypatch.setattr(
@@ -138,7 +147,7 @@ def test_real_sample_placeholder_gets_one_correction_then_validates(
         result = ask_trader.run_probe(
             "trader-sample", "What would change this decision?"
         )
-        assert result["decision"] == VALID
+        assert {key: result["decision"][key] for key in VALID} == VALID
         assert result["memory"]["attempts"] == 2
         assert result["memory"]["final_prompt_sha256"] == digest(
             requests[-1]["messages"][0]["content"]
@@ -208,7 +217,7 @@ def test_decision_working_state_cannot_read_later_rows(monkeypatch):
 
     def answer(prompt):
         prompts.append(prompt)
-        return LLMResponse(json.dumps(VALID))
+        return LLMResponse(json.dumps(explained(VALID, prompt)))
 
     monkeypatch.setattr(strategy.llm_client, "invoke", answer)
     data = pd.DataFrame(

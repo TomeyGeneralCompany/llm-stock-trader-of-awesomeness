@@ -5,6 +5,7 @@ import json
 import httpx
 import pytest
 from app import ask_trader
+from decision_fixtures import explained
 
 
 def use_ollama(monkeypatch, content):
@@ -12,8 +13,14 @@ def use_ollama(monkeypatch, content):
     requests = []
 
     def respond(request):
-        requests.append(json.loads(request.content))
-        return httpx.Response(200, json={"done": True, "message": {"content": content}})
+        body = json.loads(request.content)
+        requests.append(body)
+        answer = content
+        if body.get("format") == "json":
+            answer = json.dumps(
+                explained(json.loads(content), body["messages"][0]["content"])
+            )
+        return httpx.Response(200, json={"done": True, "message": {"content": answer}})
 
     monkeypatch.setattr(
         httpx,
@@ -44,7 +51,8 @@ def test_sample_decision_uses_strategy_prompt_and_output_gate(monkeypatch):
     result = ask_trader.run_probe(
         "trader-sample", "What evidence would change your decision?"
     )
-    assert result["decision"] == decision
+    assert {key: result["decision"][key] for key in decision} == decision
+    assert result["decision"]["explanation"]["forecast"]["assumptions"]
     assert len(requests) == 1 and requests[0]["format"] == "json"
     assert "Traditional decision principles" in requests[0]["messages"][0]["content"]
     assert (

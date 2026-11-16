@@ -177,7 +177,16 @@ def validate_output(stage: Stage, output: dict, previous: Optional[dict]) -> dic
             from app.llm.decisions import DecisionError, validate_decision
 
             try:
-                validate_decision(decision)
+                context = log.get("context")
+                if log.get("memory"):
+                    from app.llm.memory import digest
+
+                    if not isinstance(context, dict) or context.get("asof") != log["date"]:
+                        raise DecisionError("A model decision is missing its dated controller context.")
+                    body = json.dumps(context, sort_keys=True, ensure_ascii=False, allow_nan=False)
+                    if digest(body) != log["memory"]["working_sha256"]:
+                        raise DecisionError("A model decision context does not match its memory receipt.")
+                validate_decision(decision, context=context)
             except DecisionError as exc:
                 raise GateError(str(exc)) from exc
         for key, value in output.get("strategy_state", {}).items():

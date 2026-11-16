@@ -21,6 +21,7 @@ from app.backtesting.gates import (
 from app.llm.client import OllamaError, get_llm_client
 from app.llm.strategies.base import SignalType, TradingSignal
 from app.main import app
+from decision_fixtures import explained
 from fastapi.testclient import TestClient
 
 
@@ -497,13 +498,13 @@ def test_actual_qwen_strategy_runs_inside_all_gates_without_refetching(
         assert body["model"] == "qwen3:4b"
         assert body["format"] == "json"
         content = json.dumps(
-            {
+            explained({
                 "action": "HOLD",
                 "confidence": 0.8,
                 "risk_level": "medium",
                 "reasoning": "Wait for confirmation.",
                 "expected_outcome": "Continue observing.",
-            }
+            }, body["messages"][0]["content"])
         )
         return httpx.Response(200, json={"done": True, "message": {"content": content}})
 
