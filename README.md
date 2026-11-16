@@ -19,6 +19,12 @@ Trader responses explain observed state, interpretation, forecasts, and conditio
 
 The forward trader runs a rotating US listed-symbol scanner, maintains a persistent multi-symbol simulated account, and re-evaluates conditional forecasts on fresh completed market observations. Its default operating objective is **$1 to $100 in one trading session**, measured by realized flat account balance. See [autonomous paper trader](docs/paper-trader.md) for controls, replay, assumptions, and operating instructions.
 
+## Market intelligence and historical execution
+
+The service also acquires public economic/corporate evidence outside trading hours, retains source versions and citations, researches supported company relationships, produces measurable forecasts and retrieves observed lessons. Intelligence informs the existing paper controller and cannot execute orders. See [market intelligence](docs/market-intelligence.md).
+
+Historical backtests use a finite controller-owned portfolio, next-open fills, working capital/risk/commission controls, and net ledger-derived performance. See [execution and accounting](docs/execution-and-accounting.md).
+
 ## System Architecture
 
 ```mermaid

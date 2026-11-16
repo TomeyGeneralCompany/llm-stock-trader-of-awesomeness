@@ -122,8 +122,8 @@ class ExecutionLedger:
                     raise ValueError("A close decision cannot fill at the same or an earlier bar.")
                 action = order["signal_type"].lower()
                 quantity = self.quantity(opening) if action == "buy" else self.shares
-                if order.get("quantity") is not None:
-                    quantity = min(quantity, max(0, int(order["quantity"])))
+                if order.get("quantity") is not None and order["quantity"] > 0:
+                    quantity = min(quantity, int(order["quantity"]))
                 filled = self._fill(action, quantity, opening, date, order.get("reason", ""),
                                     order["timestamp"], confidence=order.get("confidence", 0)) if action in ("buy", "sell") else False
                 self.orders.append({"decision_timestamp": order["timestamp"],

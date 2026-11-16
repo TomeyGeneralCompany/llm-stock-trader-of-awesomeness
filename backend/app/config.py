@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     OLLAMA_THINK: bool = False
     OLLAMA_TIMEOUT_SECONDS: float = Field(default=0, ge=0)
 
+    # Separate additive intelligence archive; portfolio databases are untouched.
+    INTELLIGENCE_ENABLED: bool = True
+    INTELLIGENCE_DB_PATH: str = str(env_path.parent / "data" / "market-intelligence.sqlite3")
+    INTELLIGENCE_NETWORK_JOBS: int = Field(default=2, ge=1, le=16)
+    INTELLIGENCE_MAX_BYTES: int = Field(default=2000000, ge=1024, le=10000000)
+    INTELLIGENCE_USER_AGENT: str = "TomeyGeneralCompany-MarketResearch/1.0"
+    INTELLIGENCE_FEEDS: str = "[]"
+    INTELLIGENCE_BENCHMARKS: str = "SPY,^GSPC,XLK,XLF,XLE,XLI,XLU,CL=F,GC=F,^TNX,EURUSD=X"
+    INTELLIGENCE_FRED_SERIES: str = "DFF"
+    SEC_USER_AGENT: str = ""
+    FRED_API_KEY: str = ""
+
     # Additional .env settings
     REDIS_URL: Optional[str] = None
     BACKEND_URL: Optional[str] = None

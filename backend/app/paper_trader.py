@@ -85,6 +85,14 @@ class LocalDecision:
             + EXPLANATION_INSTRUCTIONS + "\nController state:\n" + dump(context)
         )
         budget = prompt_budget(self.client.config.num_ctx, self.client.config.max_tokens)
+        # Complete evidence stays archived; optional context yields to account facts.
+        if len(instructions.encode()) > budget-450 and context.get("intelligence"):
+            import copy
+            compact = copy.deepcopy(context)
+            for key in ("relationships", "lessons", "catalysts"):
+                while compact["intelligence"].get(key) and len(instructions.encode()) > budget-450:
+                    compact["intelligence"][key].pop()
+                    instructions = instructions.split("\nController state:\n", 1)[0] + "\nController state:\n" + dump(compact)
         prompt = instructions + "\nPrior outcomes (historical only):\n"
         for lesson in lessons:
             line = dump(lesson) + "\n"
@@ -144,7 +152,8 @@ class PaperTrader:
     """Single-writer SQLite event ledger; atomic fills, state, decisions and outcomes."""
     def __init__(self, path, decide=None, *, challenge=True, initial=10000.0,
                  spread_bps=10, slippage_bps=5, fee=0.0, min_notional=.01,
-                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward"):
+                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward", intelligence=None):
+        self.intelligence = intelligence
         self.path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = FileLock(self.path + ".lock", timeout=0)
@@ -372,11 +381,15 @@ class PaperTrader:
                 continue
             info["symbol"] = symbol
             info["asof"] = end
+            if self.intelligence is not None:
+                info["score"], info["intelligence"] = self.intelligence.rank(symbol, info["score"], now)
             results.append(info)
         return sorted(results, key=lambda x: (-x["score"], x["symbol"]))
 
     def tick(self, bars, now, *, time_source=None, cursor=None, finish=False):
         now = utc(now)
+        if self.intelligence is not None:
+            self.intelligence.observe(bars, now)
         day = now.astimezone(EASTERN).date().isoformat()
         # Serialize controller even across processes; writes are recoverable.
         with self.lock:
@@ -589,6 +602,7 @@ def main():
     p.add_argument("command", choices=("run", "once", "replay", "status"))
     from app.config import settings
     p.add_argument("--db", default=settings.PAPER_DB_PATH)
+    p.add_argument("--intelligence-db", help="Explicit evidence archive; replay still enforces original availability times")
     p.add_argument("--symbols", help="Comma-separated override; default US exchange listings")
     p.add_argument("--csv", help="Replay CSV: symbol,end,open,high,low,close,volume; end in UTC")
     p.add_argument("--warmup-sessions", type=int, default=1, help="Historical sessions loaded without inference or fills")
@@ -616,7 +630,12 @@ def main():
     if args.command == "status":
         print(json.dumps(read_report(args.db), indent=2))
         return
-    engine = PaperTrader(args.db, challenge=not args.normal, initial=args.capital,
+    intelligence = None
+    if settings.INTELLIGENCE_ENABLED:
+        from app.intelligence.controller import IntelligenceController
+        intelligence_path = args.intelligence_db or (args.db + ".intelligence.sqlite3" if args.command == "replay" else settings.INTELLIGENCE_DB_PATH)
+        intelligence = IntelligenceController(intelligence_path, settings)
+    engine = PaperTrader(args.db, intelligence=intelligence, challenge=not args.normal, initial=args.capital,
                          spread_bps=args.spread_bps, slippage_bps=args.slippage_bps, fee=args.fee,
                          min_notional=args.min_notional, reuse_proceeds=args.reuse_proceeds,
                          max_candidates=args.candidates, close=close,
@@ -635,6 +654,8 @@ def main():
             hours = market_close(local.date(), engine.close)
             window = hours and (9,30) <= (local.hour,local.minute) and now <= engine.closing(local.date().isoformat()) + timedelta(minutes=31)
             if not window and args.command != "once":
+                if intelligence is not None:
+                    intelligence.cycle(now)
                 engine.tick([], now)
                 time.sleep(args.poll)
                 continue
@@ -650,7 +671,11 @@ def main():
             with stage_resources("ACQUIRE"):
                 bars = yahoo_bars(sorted(set(scan+watch)), now)
             engine.tick(bars, datetime.now(UTC), time_source=lambda: datetime.now(UTC), cursor=(cursor+len(scan))%len(universe))
-            print(dump(engine.report()), flush=True)
+            report = engine.report()
+            if intelligence is not None:
+                intelligence.paper_audit(report, datetime.now(UTC))
+                intelligence.cycle(datetime.now(UTC), priority=watch)
+            print(dump(report), flush=True)
         except KeyboardInterrupt:
             return
         except Exception as exc:

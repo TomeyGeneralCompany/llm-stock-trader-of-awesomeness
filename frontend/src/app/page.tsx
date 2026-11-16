@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import StreamingLLMRunner from '@/components/llm/StreamingLLMRunner'
 import PaperTraderStatus from '@/components/llm/PaperTraderStatus'
+import IntelligenceStatus from '@/components/llm/IntelligenceStatus'
 import { useState } from 'react'
 
 export default function Home() {
@@ -20,6 +21,7 @@ export default function Home() {
   return (
     <QueryClientProvider client={queryClient}>
       <PaperTraderStatus />
+      <IntelligenceStatus />
       <StreamingLLMRunner />
     </QueryClientProvider>
   )

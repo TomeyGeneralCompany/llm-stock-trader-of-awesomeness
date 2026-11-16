@@ -212,3 +212,7 @@ __marimo__/
 
 /data/paper-trader*.sqlite3*
 /paper-trader-results/
+
+/data/market-intelligence.sqlite3*
+*.intelligence.sqlite3*
+/intelligence-probe/
