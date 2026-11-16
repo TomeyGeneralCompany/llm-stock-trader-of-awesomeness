@@ -377,3 +377,31 @@ def test_native_paper_contract_keeps_semantic_gate_and_exact_controller_state(tm
     result=LocalDecision()(context,[])
     assert result["explanation"]["observed_state"]["position"]=="flat"
     assert len(requests)==2
+
+
+
+def test_treasury_official_index_enqueues_articles_and_supersedes_old_feed(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    intel.store.enqueue("treasury","feed",{"url":"https://home.treasury.gov/news/press-releases/feed"},WHEN)
+    intel.acquisition.register()
+    with intel.store.connect() as db:
+        assert db.execute("SELECT status FROM acquisition_jobs WHERE source='treasury'").fetchone()[0]=="superseded"
+    intel.acquisition.fetch=lambda *args: b'<html><a href="/news/press-releases/abc123">Treasury announces economic measures</a><a href="/news/press-releases/abc123">Duplicate</a><a href="https://other.example/news/press-releases/fake">Outside</a></html>'
+    intel.acquisition.acquire({"source":"treasury","kind":"index","payload":json.dumps({"url":"https://home.treasury.gov/news/press-releases"})},stamp(WHEN))
+    with intel.store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM documents").fetchone()[0]==1
+        assert db.execute("SELECT COUNT(*) FROM acquisition_jobs WHERE kind='article'").fetchone()[0]==1
+
+
+def test_public_feed_accepts_standard_xml_media_types(monkeypatch):
+    import httpx
+    from app.intelligence import sources
+    original=httpx.Client
+    monkeypatch.setattr(sources,"public_url",lambda url,domains:url)
+    def serve(request):
+        assert "application/xml" in request.headers["accept"]
+        assert "text/xml" in request.headers["accept"]
+        assert "*/*" in request.headers["accept"]
+        return httpx.Response(200,content=b"<rss/>")
+    monkeypatch.setattr(httpx,"Client",lambda **kwargs:original(transport=httpx.MockTransport(serve),**kwargs))
+    assert sources.PublicFetcher("fixture")("https://example.org/feed",{"example.org"})==b"<rss/>"

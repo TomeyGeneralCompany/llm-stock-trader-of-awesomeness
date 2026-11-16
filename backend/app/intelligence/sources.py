@@ -21,7 +21,7 @@ DEFAULT_SOURCES = [
     ("federal_reserve", "https://www.federalreserve.gov/feeds/press_all.xml", 300, "feed"),
     ("bls", "https://www.bls.gov/feed/bls_latest.rss", 300, "feed"),
     ("bea", "https://apps.bea.gov/rss/rss.xml", 300, "feed"),
-    ("treasury", "https://home.treasury.gov/news/press-releases/feed", 900, "feed"),
+    ("treasury", "https://home.treasury.gov/news/press-releases", 900, "index"),
     ("gdelt", "https://api.gdeltproject.org/api/v2/doc/doc", 900, "gdelt"),
     ("eia", "https://www.eia.gov/rss/press_rss.xml", 1800, "feed"),
     ("nasdaq", "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt", 86400, "listing"),
@@ -51,7 +51,7 @@ class PublicFetcher:
             if urlsplit(url).hostname.endswith("sec.gov"):
                 time.sleep(.2)
             with httpx.Client(timeout=httpx.Timeout(20, connect=5), trust_env=False, follow_redirects=False) as client:
-                with client.stream("GET", url, headers={"User-Agent": self.user_agent, "Accept": "application/rss+xml, application/atom+xml, application/json, text/html, text/plain"}) as response:
+                with client.stream("GET", url, headers={"User-Agent": self.user_agent, "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, application/json, text/html, text/plain, */*;q=0.5"}) as response:
                     if response.is_redirect:
                         url = urljoin(url, response.headers["location"])
                         continue
@@ -120,7 +120,10 @@ class SourceAcquisition:
             db.execute("INSERT OR IGNORE INTO sources(id,body,next_due) VALUES(?,?,?)", ("yahoo", dump({"url": "https://finance.yahoo.com", "kind": "market", "interval": 300}), "9999-01-01T00:00:00+00:00"))
             for ident, url, interval, kind in configured:
                 body = {"url": canonical(url), "interval": max(30, interval), "kind": kind}
-                db.execute("INSERT OR IGNORE INTO sources(id,body,next_due) VALUES(?,?,?)", (ident, dump(body), now))
+                db.execute("INSERT INTO sources(id,body,next_due) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET body=excluded.body", (ident, dump(body), now))
+                db.execute("""UPDATE acquisition_jobs SET status='superseded',error='Source configuration changed'
+                    WHERE source=? AND status='queued' AND kind IN ('feed','index','listing','fred','alfred','gdelt')
+                    AND json_extract(payload,'$.url')<>?""", (ident,body["url"]))
         for symbol in self.config.INTELLIGENCE_BENCHMARKS.split(","):
             if symbol.strip():
                 self.store.security(symbol.strip(), {"company": symbol.strip(), "security_type": "benchmark"}, stamp())
@@ -240,7 +243,21 @@ class SourceAcquisition:
                 self.store.enqueue("yahoo", "metadata", {"symbol": symbol}, now)
                 self.store.enqueue("yahoo", "market", {"symbol": symbol}, now)
             return
-        if job["kind"] == "gdelt":
+        if job["kind"] == "index":
+            # Treasury publishes an HTML release index rather than the assumed RSS URL.
+            soup = BeautifulSoup(raw, "html.parser")
+            items, seen = [], set()
+            for link in soup.select("a[href]"):
+                target = urljoin(payload["url"], link["href"])
+                parts = urlsplit(target)
+                title = link.get_text(" ", strip=True)
+                if parts.hostname != urlsplit(payload["url"]).hostname or not parts.path.startswith("/news/press-releases/") or not title or target in seen:
+                    continue
+                seen.add(target)
+                items.append({"url":target,"title":title,"text":title,"published":None,"language":"en"})
+            if not items:
+                raise ValueError("Official release index contained no parsable release links.")
+        elif job["kind"] == "gdelt":
             items = [{"url": item["url"], "title": item.get("title", ""), "text": item.get("title", ""), "published": None, "language": item.get("language", "und")} for item in json.loads(raw).get("articles", [])]
         elif job["kind"] in ("fred", "alfred"):
             # Preserve release/vintage metadata as dated evidence; no fabricated economic values.
@@ -253,7 +270,7 @@ class SourceAcquisition:
             self.link_followup(payload, version, now)
             link_host = urlsplit(item["url"]).hostname
             # A public source's own article is a structured follow-up, never a shell task.
-            if job["kind"] in ("feed", "gdelt") and urlsplit(item["url"]).scheme == "https":
+            if job["kind"] in ("feed", "gdelt", "index") and urlsplit(item["url"]).scheme == "https":
                 self.store.enqueue(job["source"], "article", {"url": canonical(item["url"]), "published": item["published"], "title": item["title"], "summary_hash": __import__("hashlib").sha256(item["text"].encode()).hexdigest(), **({"task": payload["task"]} if payload.get("task") else {})}, now)
 
     def link_followup(self, payload, version, now):
