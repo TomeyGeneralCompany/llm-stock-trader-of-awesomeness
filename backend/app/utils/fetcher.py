@@ -9,6 +9,8 @@ from typing import Dict, Optional
 
 import pandas as pd
 
+from app.stage_resources import require_acquisition_stage
+
 from .yfinance_utils import (
     DataRetrievalError,
     EmptyDataError,
@@ -66,6 +68,7 @@ class StockDataFetcher:
         Raises:
             None: All exceptions are caught and logged, returns None on failure
         """
+        require_acquisition_stage()
         try:
             # Validate inputs
             if not symbol or not isinstance(symbol, str):

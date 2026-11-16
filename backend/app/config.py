@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Backtesting settings
     DEFAULT_INITIAL_CAPITAL: float = 10000.0
     DEFAULT_COMMISSION: float = 0.001
+    PIPELINE_DB_PATH: str = str(env_path.parent / "data" / "stage-gates.sqlite3")
+    PIPELINE_LOCK_PATH: str = str(env_path.parent / "data" / "stage-work.lock")
+    PIPELINE_NUM_THREADS: int = Field(default=4, ge=1)
 
     # Local Qwen inference through the existing Ollama installation.
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"

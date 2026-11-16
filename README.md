@@ -7,6 +7,8 @@ Stock trading backtesting system using local Qwen 3 inference through Ollama.
 
 The interface, prompts, explanations, logs, comments, and project documentation use English. The original uploaded ZIP remains an unchanged upstream archive.
 
+Backtests follow enforced stages: **ACQUIRE → PREPARE → ANALYZE → SIMULATE → REVIEW → REPORT**. Each gate validates and saves its handoff before the next stage starts. The dashboard shows stage status, evidence, and **Stop after stage**. See the [stage gate guide](docs/stage-gates.md) for completion criteria and resource settings.
+
 ## System Architecture
 
 ```mermaid
@@ -94,7 +96,7 @@ OLLAMA_TIMEOUT_SECONDS=0
 
 Change `OLLAMA_MODEL` to the exact installed tag if you use a different Qwen 3 build. No cloud credentials are required, and old provider API keys do not select a different provider.
 
-Trading decisions, retrospective analysis, and daily feedback all use this local client. Inference requests share one slot in the backend process. Trading decisions use Ollama's JSON output mode; feedback and reviews use English text. `OLLAMA_THINK=false` selects direct answers so thinking does not consume the existing output-token budgets. Thinking is configurable, but longer thinking may require larger response budgets in the calling feature.
+Trading decisions, retrospective analysis, and daily feedback all use this local client. Model requests and pipeline stages share the installation's heavy-work resource slot. Trading decisions use Ollama's JSON output mode; feedback and reviews use English text. `OLLAMA_THINK=false` selects direct answers so thinking does not consume the existing output-token budgets. Thinking is configurable, but longer thinking may require larger response budgets in the calling feature.
 
 `OLLAMA_TIMEOUT_SECONDS=0` allows CPU inference to finish without a read deadline. Set a positive value if you want a read timeout. Ollama connection failures still time out after five seconds. Market-data downloads still require an internet connection.
 

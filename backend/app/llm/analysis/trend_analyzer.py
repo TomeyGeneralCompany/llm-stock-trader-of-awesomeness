@@ -105,6 +105,8 @@ class EnhancedTrendAnalyzer:
 
     def __init__(self):
         self.stock_service = StockService()
+        self._snapshot = None
+        self._snapshot_symbol = None
 
         # Core analysis parameters
         self.trend_threshold = 0.15  # Lower threshold for sensitive trend detection
@@ -188,10 +190,27 @@ class EnhancedTrendAnalyzer:
             price=current_price,
         )
 
+    def use_snapshot(self, symbol: str, market_data: List[Dict]) -> None:
+        """Bind trend analysis to the data acquired and sealed for this run."""
+        from copy import deepcopy
+
+        self._snapshot_symbol = symbol
+        self._snapshot = deepcopy(market_data)
+
     def _get_analysis_data(
         self, symbol: str, target_date: Optional[str] = None
     ) -> List[Dict]:
         """Get market data for analysis"""
+        from copy import deepcopy
+
+        if self._snapshot is not None:
+            if symbol != self._snapshot_symbol:
+                raise ValueError("Trend analysis requested a different run's symbol.")
+            records = self._snapshot
+            if target_date:
+                end = datetime.strptime(target_date, "%Y-%m-%d")
+                records = [row for row in records if datetime.strptime(row["date"], "%Y-%m-%d") <= end]
+            return deepcopy(records[-120:] if len(records) >= 60 else records[:])
         if target_date:
             # Get data up to target date with sufficient history
             end_date = datetime.strptime(target_date, "%Y-%m-%d")

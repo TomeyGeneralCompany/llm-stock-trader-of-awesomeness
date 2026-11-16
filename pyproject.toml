@@ -26,6 +26,8 @@ dependencies = [
     "python-multipart>=0.0.6",
     "redis>=5.0.1",
     "httpx>=0.25.2",
+    "filelock>=3.16.0",
+    "threadpoolctl>=3.6.0",
     # Stock Data
     "yfinance>=0.2.18",
     "scipy>=1.11.4",

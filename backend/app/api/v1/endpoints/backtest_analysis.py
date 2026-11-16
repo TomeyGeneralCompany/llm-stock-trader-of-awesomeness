@@ -98,6 +98,34 @@ class AvailableDatesResponse(BaseModel):
     total_days: int
 
 
+def resolve_run_session(conn, run_id: str) -> str:
+    """Use exact ownership for stage runs; retain legacy timestamp lookup."""
+    row = conn.execute(
+        "SELECT session_id FROM daily_analysis_logs WHERE session_id=? LIMIT 1", (run_id,)
+    ).fetchone()
+    if row:
+        return row[0]
+    if run_id.startswith(("session-", "backtest-")):
+        raise HTTPException(status_code=404, detail="No analysis logs for this run")
+    if run_id.startswith("run-"):
+        try:
+            seconds = int(run_id.split("-")[1]) // 1000
+        except (ValueError, IndexError):
+            seconds = None
+        if seconds is not None:
+            for delta in (0, 1, -1, 2, -2):
+                row = conn.execute(
+                    "SELECT DISTINCT session_id FROM daily_analysis_logs WHERE session_id LIKE ? ORDER BY session_id DESC LIMIT 1",
+                    (f"%{seconds + delta}%",),
+                ).fetchone()
+                if row:
+                    return row[0]
+    row = conn.execute("SELECT session_id FROM daily_analysis_logs ORDER BY session_id DESC LIMIT 1").fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No sessions found in database")
+    return row[0]
+
+
 @router.get("/available-dates/{run_id}", response_model=AvailableDatesResponse)
 async def get_available_dates_by_run_id(
     run_id: str,
@@ -115,50 +143,11 @@ async def get_available_dates_by_run_id(
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Extract timestamp from run_id if it exists
-        run_timestamp = None
-        if "-" in run_id:
-            parts = run_id.split("-")
-            if len(parts) >= 2:
-                try:
-                    run_timestamp = int(parts[1])
-                except ValueError:
-                    pass
-
-        # Try to find matching session_id by timestamp proximity
-        actual_session_id = None
-        if run_timestamp:
-            # Convert milliseconds to seconds for matching
-            run_timestamp_sec = run_timestamp // 1000
-            # Try exact match first, then nearby timestamps
-            for delta in [0, 1, -1, 2, -2]:
-                search_timestamp = run_timestamp_sec + delta
-                cursor.execute(
-                    """
-                    SELECT DISTINCT session_id FROM daily_analysis_logs 
-                    WHERE session_id LIKE ?
-                    ORDER BY session_id DESC
-                """,
-                    (f"%{search_timestamp}%",),
-                )
-                matching_sessions = cursor.fetchall()
-                if matching_sessions:
-                    actual_session_id = matching_sessions[0][0]
-                    break
-
-        if not actual_session_id:
-            # If no matching session found, try to get the latest session
-            cursor.execute(
-                "SELECT DISTINCT session_id FROM daily_analysis_logs ORDER BY session_id DESC LIMIT 1"
-            )
-            latest_session = cursor.fetchone()
-            if latest_session:
-                actual_session_id = latest_session[0]
-            else:
-                conn.close()
-                raise HTTPException(
-                    status_code=404, detail=f"No sessions found in database"
-                )
+        try:
+            actual_session_id = resolve_run_session(conn, run_id)
+        except Exception:
+            conn.close()
+            raise
 
         # Get dates for the matched session
         query = "SELECT DISTINCT date FROM daily_analysis_logs WHERE session_id = ?"
@@ -187,6 +176,8 @@ async def get_available_dates_by_run_id(
             dates=dates, date_range=date_range, total_days=len(dates)
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving dates: {str(e)}")
 
@@ -267,63 +258,10 @@ async def get_day_analysis(
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Extract timestamp from run_id if it exists
-        run_timestamp = None
-        if "-" in run_id:
-            parts = run_id.split("-")
-            if len(parts) >= 2:
-                try:
-                    run_timestamp = int(parts[1])
-                except ValueError:
-                    pass
-
-        # Try to find matching session_id by timestamp proximity (within 10 seconds)
-        if run_timestamp:
-            # Convert milliseconds to seconds for matching
-            run_timestamp_sec = run_timestamp // 1000
-            # Try exact match first, then nearby timestamps
-            for delta in [0, 1, -1, 2, -2]:
-                search_timestamp = run_timestamp_sec + delta
-                cursor.execute(
-                    """
-                    SELECT DISTINCT session_id FROM daily_analysis_logs 
-                    WHERE session_id LIKE ?
-                    ORDER BY session_id DESC
-                """,
-                    (f"%{search_timestamp}%",),
-                )
-                matching_sessions = cursor.fetchall()
-                if matching_sessions:
-                    break
-            else:
-                matching_sessions = []
-        else:
-            cursor.execute("""
-                SELECT DISTINCT session_id FROM daily_analysis_logs 
-                ORDER BY session_id DESC
-                LIMIT 1
-            """)
-            matching_sessions = cursor.fetchall()
-        conn.close()
-
-        if not matching_sessions:
-            # If no matching session found, try to get the latest session
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT DISTINCT session_id FROM daily_analysis_logs ORDER BY session_id DESC LIMIT 1"
-            )
-            latest_session = cursor.fetchone()
+        try:
+            actual_session_id = resolve_run_session(conn, run_id)
+        finally:
             conn.close()
-
-            if latest_session:
-                actual_session_id = latest_session[0]
-            else:
-                raise HTTPException(
-                    status_code=404, detail=f"No sessions found in database"
-                )
-        else:
-            actual_session_id = matching_sessions[0][0]
 
         # Initialize logger with the actual session_id
         logger = BacktestLogger(db_path, session_id=actual_session_id)

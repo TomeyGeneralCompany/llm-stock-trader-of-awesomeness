@@ -11,6 +11,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -26,8 +27,35 @@ from ..utils.indicators import (
     calculate_moving_averages,
     calculate_rsi,
 )
+from .gates import (
+    GateCancelled,
+    Stage,
+    StageGateController,
+    frame_records,
+    records_frame,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def strategy_state(strategy) -> dict:
+    """Snapshot only the state required by settlement and performance review."""
+    return {
+        key: getattr(strategy, key)
+        for key in (
+            "cash",
+            "shares",
+            "current_position",
+            "position_entry_price",
+            "position_entry_date",
+            "initial_capital",
+            "total_trades",
+            "winning_trades",
+            "total_realized_pnl",
+            "trade_returns",
+        )
+        if hasattr(strategy, key)
+    }
 
 
 class TradingMode(Enum):
@@ -67,7 +95,7 @@ class Trade:
     shares: int  # Shares traded
     price: float  # Trade price
     commission: float  # Commission
-    total_cost: float  # Total cost (including commission) 
+    total_cost: float  # Total cost (including commission)
     status: TradeStatus  # Trade status
     signal_confidence: float = 0.0  # Signal strength
     reason: str = ""  # Trade reason
@@ -118,7 +146,7 @@ class Portfolio:
             self.positions[symbol] = shares
 
     def calculate_total_value(self, prices: Dict[str, float]) -> float:
-        """Calculate total portfolio value (Cash + Market value of holdings) """
+        """Calculate total portfolio value (Cash + Market value of holdings)"""
         stock_value = sum(
             shares * prices.get(symbol, 0.0)
             for symbol, shares in self.positions.items()
@@ -141,9 +169,13 @@ class BacktestConfig:
     initial_capital: float = 1000000.0  # Initial capital
     max_shares_per_trade: int = 1000  # Maximum shares per buy
     trading_mode: TradingMode = TradingMode.LONG_ONLY  # Trading mode
-    trade_on_open: bool = False  # Whether to trade at the opening price (False=Closing price) 
-    commission_rate: float = 0.001425  # Commission rate (Approximately for Taiwan stocks 0.1425%) 
-    min_commission: float = 20.0  # Minimum commission (Taiwan stocks 20 currency units) 
+    trade_on_open: bool = (
+        False  # Whether to trade at the opening price (False=Closing price)
+    )
+    commission_rate: float = (
+        0.001425  # Commission rate (Approximately for Taiwan stocks 0.1425%)
+    )
+    min_commission: float = 20.0  # Minimum commission (Taiwan stocks 20 currency units)
 
     def calculate_commission(self, trade_value: float) -> float:
         """Calculate commission"""
@@ -217,7 +249,7 @@ class CustomBacktestEngine:
 
         Args:
             symbol: Stock symbol
-            period: Data period (1y, 6mo, 3mo etc.) 
+            period: Data period (1y, 6mo, 3mo etc.)
             start_date: Start date (Optional)
             end_date: End date (Optional)
 
@@ -284,6 +316,8 @@ class CustomBacktestEngine:
         initial_cash: float = 10000.0,
         transaction_cost: float = 0.001,
         symbol: str = None,
+        gates: Optional[StageGateController] = None,
+        report_builder=None,
     ) -> Dict[str, Any]:
         """
         Run backtest - Core method of the custom engine
@@ -298,9 +332,23 @@ class CustomBacktestEngine:
         Returns:
             Backtest results dictionary
         """
+        gates = gates or StageGateController(
+            request={
+                "symbol": symbol,
+                "initial_cash": initial_cash,
+                "transaction_cost": transaction_cost,
+            }
+        )
         self.is_running = True
 
         try:
+            if gates.state["stages"][0]["status"] == "pending":
+                gates.start(Stage.ACQUIRE)
+                gates.complete(Stage.ACQUIRE, {"rows": frame_records(stock_data)})
+            gates.start(Stage.PREPARE)
+            stock_data = records_frame(
+                gates.store.artifact(gates.run_id, Stage.ACQUIRE)["rows"]
+            )
             # Determine strategy name
             strategy_name = getattr(strategy, "name", type(strategy).__name__)
 
@@ -311,6 +359,12 @@ class CustomBacktestEngine:
 
             # 2. Calculate technical indicators
             enhanced_data = self._prepare_technical_indicators(stock_data.copy())
+
+            gates.complete(Stage.PREPARE, {"rows": frame_records(enhanced_data)})
+            gates.start(Stage.ANALYZE)
+            enhanced_data = records_frame(
+                gates.store.artifact(gates.run_id, Stage.PREPARE)["rows"]
+            )
 
             # 3. Generate trading signals
             # Set the current stock symbol on the strategy, for Enhanced trend analysis
@@ -327,8 +381,49 @@ class CustomBacktestEngine:
                 strategy.max_portfolio_value = initial_cash
                 print(f"💰 Set initial strategy capital: ${initial_cash:,.0f}")
 
+            analyzer = getattr(strategy, "trend_analyzer", None)
+            if analyzer is not None and hasattr(analyzer, "use_snapshot"):
+                analyzer.use_snapshot(
+                    symbol or "UNKNOWN",
+                    [
+                        {"date": index.strftime("%Y-%m-%d"), **row.to_dict()}
+                        for index, row in stock_data.iterrows()
+                    ],
+                )
             signals = strategy.generate_signals(enhanced_data)
 
+            gates.complete(
+                Stage.ANALYZE,
+                {
+                    "rows_processed": getattr(
+                        strategy, "analysis_rows_processed", len(enhanced_data)
+                    ),
+                    "timestamps": [index.isoformat() for index in enhanced_data.index],
+                    "signals": [signal.to_dict() for signal in signals],
+                    "decisions": getattr(strategy, "decision_log", []),
+                    "strategy_state": strategy_state(strategy),
+                },
+            )
+            gates.start(Stage.SIMULATE)
+            sealed = gates.store.artifact(gates.run_id, Stage.ANALYZE)
+            signals = [
+                TradingSignal(
+                    signal_type=SignalType[row["signal_type"]],
+                    timestamp=pd.Timestamp(row["timestamp"]),
+                    price=row["price"],
+                    quantity=row["quantity"],
+                    confidence=row["confidence"],
+                    reason=row["reason"],
+                    stop_loss=row["stop_loss"],
+                    take_profit=row["take_profit"],
+                    metadata=row["metadata"],
+                )
+                for row in sealed["signals"]
+            ]
+            for key, value in sealed["strategy_state"].items():
+                if key == "position_entry_date" and value is not None:
+                    value = pd.Timestamp(value)
+                setattr(strategy, key, value)
             logger.info(f"Generated {len(signals)} trading signals")
 
             # 4. Run trading simulation
@@ -349,14 +444,20 @@ class CustomBacktestEngine:
             if hasattr(strategy, "finalize_backtest"):
                 try:
                     strategy.finalize_backtest(final_price, final_date)
-                    logger.info(f"Strategy {strategy_name} Backtest finalization completed")
+                    logger.info(
+                        f"Strategy {strategy_name} Backtest finalization completed"
+                    )
                 except Exception as e:
-                    logger.warning(f"Strategy {strategy_name} Backtest finalization failed: {e}")
+                    logger.warning(
+                        f"Strategy {strategy_name} Backtest finalization failed: {e}"
+                    )
 
             # If the portfolio still has positions, force settlement
             current_position = portfolio.get_position(symbol or "UNKNOWN")
             if current_position > 0:
-                logger.info(f"Detected unsettled position {current_position} shares, force settlement")
+                logger.info(
+                    f"Detected unsettled position {current_position} shares, force settlement"
+                )
 
                 # Create forced settlement trade
                 final_trade = Trade(
@@ -395,6 +496,35 @@ class CustomBacktestEngine:
                     f"Forced settlement completed: Sold {current_position} shares, Price ${final_price:.2f}"
                 )
 
+            gates.complete(
+                Stage.SIMULATE,
+                {
+                    "trades": [trade.to_dict() for trade in trades],
+                    "portfolio_history": portfolio_history,
+                    "strategy_state": strategy_state(strategy),
+                },
+            )
+            gates.start(Stage.REVIEW)
+            replay = gates.store.artifact(gates.run_id, Stage.SIMULATE)
+            portfolio_history = [
+                {**row, "date": pd.Timestamp(row["date"])}
+                for row in replay["portfolio_history"]
+            ]
+            trades = [
+                Trade(
+                    **{
+                        **row,
+                        "timestamp": pd.Timestamp(row["timestamp"]),
+                        "order_type": OrderType(row["order_type"]),
+                        "status": TradeStatus(row["status"]),
+                    }
+                )
+                for row in replay["trades"]
+            ]
+            enhanced_data = records_frame(
+                gates.store.artifact(gates.run_id, Stage.PREPARE)["rows"]
+            )
+
             # 5. Calculate performance metrics
             results = self._calculate_performance_metrics(
                 portfolio_history,
@@ -403,9 +533,19 @@ class CustomBacktestEngine:
                 signals,
                 symbol=symbol or "UNKNOWN",
                 strategy_name=strategy_name,
-                strategy=strategy,  # Pass strategy object
+                strategy=SimpleNamespace(**replay["strategy_state"]),
                 initial_cash=initial_cash,
             )
+
+            gates.complete(Stage.REVIEW, {"results": results})
+            gates.start(Stage.REPORT)
+            results = gates.store.artifact(gates.run_id, Stage.REVIEW)["results"]
+            # Preserve the engine's datetime-valued ledger for Python callers.
+            for row in results["portfolio_history"]:
+                row["date"] = pd.Timestamp(row["date"])
+            reported = report_builder(results) if report_builder else results
+            gates.complete(Stage.REPORT, {"results": results, "view": reported})
+            self.last_pipeline = gates.store.snapshot(gates.run_id)
 
             # 6. Store results
             self.current_results[
@@ -413,9 +553,12 @@ class CustomBacktestEngine:
             ] = results
 
             logger.info(f"Backtest completed: {strategy_name}")
-            return results
+            return reported
 
+        except GateCancelled:
+            raise
         except Exception as e:
+            gates.fail(e)
             logger.error(f"Backtest failed: {e}")
             raise
         finally:
@@ -517,7 +660,7 @@ class CustomBacktestEngine:
             stock_value = current_position * current_price
             total_value = portfolio.cash + stock_value
 
-            # Calculate cumulative return (relative to initial capital) 
+            # Calculate cumulative return (relative to initial capital)
             cumulative_return = (total_value - initial_cash) / initial_cash
 
             # Calculate unrealized P&L and return for this trade
@@ -577,7 +720,7 @@ class CustomBacktestEngine:
             trade_id: Trade ID
 
         Returns:
-            Trade record or None (if execution is not possible) 
+            Trade record or None (if execution is not possible)
         """
         # In long-only mode, do not buy again if shares are already held
         if (
@@ -657,7 +800,7 @@ class CustomBacktestEngine:
             trade_id: Trade ID
 
         Returns:
-            Trade record or None (if execution is not possible) 
+            Trade record or None (if execution is not possible)
         """
         current_position = portfolio.get_position(symbol)
 
@@ -765,7 +908,7 @@ class CustomBacktestEngine:
         buy_trades = [t for t in trades if t.order_type == OrderType.BUY]
         sell_trades = [t for t in trades if t.order_type == OrderType.SELL]
 
-        # Calculate win rate (Requires matching buy and sell trades) 
+        # Calculate win rate (Requires matching buy and sell trades)
         win_rate = 0.0
         if len(buy_trades) > 0 and len(sell_trades) > 0:
             # Simplified win-rate calculation: Compare buy and sell prices
@@ -777,7 +920,7 @@ class CustomBacktestEngine:
             )
             win_rate = wins / paired_trades if paired_trades > 0 else 0
 
-        # Benchmark comparison (Buy and hold) 
+        # Benchmark comparison (Buy and hold)
         buy_hold_return = (data["close"].iloc[-1] / data["close"].iloc[0]) - 1
         alpha = final_return - buy_hold_return
 
@@ -832,7 +975,7 @@ class CustomBacktestEngine:
                 "win_rate": float(win_rate),
             },
             "strategy_statistics": {
-                # Get detailed statistics from the strategy (if available) 
+                # Get detailed statistics from the strategy (if available)
                 "total_realized_pnl": getattr(strategy, "total_realized_pnl", 0.0),
                 "total_trades": getattr(strategy, "total_trades", num_trades),
                 "winning_trades": getattr(strategy, "winning_trades", 0),
@@ -972,7 +1115,9 @@ class CustomBacktestEngine:
         result_key = f"{symbol}_{strategy_name}"
 
         if result_key not in self.current_results:
-            raise ValueError(f"Cannot find {symbol} Strategy {strategy_name} backtest results")
+            raise ValueError(
+                f"Cannot find {symbol} Strategy {strategy_name} backtest results"
+            )
 
         result = self.current_results[result_key]
 
@@ -1056,7 +1201,7 @@ class CustomBacktestEngine:
             col=1,
         )
 
-        # Add benchmark line (Buy and hold) 
+        # Add benchmark line (Buy and hold)
         buy_hold_return = result["benchmark_comparison"]["buy_hold_return"]
         fig.add_hline(
             y=buy_hold_return * 100,

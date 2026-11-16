@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import yfinance as yf
 
+from app.stage_resources import require_acquisition_stage
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ class StockService:
         Returns:
             List of market data
         """
+        require_acquisition_stage()
         try:
             # Clean date format - remove timezone info
             if start_date:
@@ -146,6 +149,7 @@ class StockService:
         Returns:
             Stock information dictionary
         """
+        require_acquisition_stage()
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info

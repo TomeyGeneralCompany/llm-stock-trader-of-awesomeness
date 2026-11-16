@@ -221,6 +221,13 @@ flowchart TD
 
 All AI features share the native Ollama chat client in `backend/app/llm/client.py`. The default model is `qwen3:4b` at `http://127.0.0.1:11434`. No cloud model SDKs or model API keys are required.
 
-The client maintains the application's `response.content` interface. Trading decisions request JSON output; daily feedback and retrospective reviews request English prose. Async API handlers offload local inference to a worker thread. A shared lock allows one inference request at a time per backend process.
+The client maintains the application's `response.content` interface. Trading decisions request JSON output; daily feedback and retrospective reviews request English prose. Async API handlers offload local inference to a worker thread. A shared host lock serializes heavy pipeline stages and inference across backend processes in the same installation.
 
 The default context is 8192 tokens, inference uses four threads, and the model stays loaded for 30 minutes after use. Qwen's direct-answer mode is the default; thinking is configurable. The read timeout defaults to unlimited, while connection failures have a five-second timeout. These settings are documented in `.env.example`.
+
+
+## Controller-Owned Stages
+
+The streaming API and backtest engine use the same stage controller: ACQUIRE → PREPARE → ANALYZE → SIMULATE → REVIEW → REPORT. Each stage validates and saves a content-hashed handoff before the controller advances. Failed gates block later work. Model calls belong to ANALYZE, and data downloads belong to ACQUIRE; trend analysis uses the acquired snapshot.
+
+The dashboard displays live gate status and can reload saved status and completed reports. Stop requests take effect at a stage boundary. Numerical work defaults to four threads, with one heavy stage or on-demand AI request holding the shared host resource slot at a time. See [the stage gate guide](docs/stage-gates.md) for the artifact checks and API.

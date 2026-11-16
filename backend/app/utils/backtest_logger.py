@@ -141,7 +141,7 @@ class BacktestLogger:
         strategy_state: Dict[str, Any] = None,
     ) -> int:
         """
-        Record daily analysis data (New records replace older records for the same stock and date)
+        Record daily analysis data (New records replace older records for the same session, stock, and date)
 
         Args:
             symbol: Stock symbol
@@ -160,14 +160,14 @@ class BacktestLogger:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
 
-            # Check for existing matching records (Same symbol + date)
+            # Check for existing matching records (Same session + symbol + date)
             cursor.execute(
                 """
                 SELECT id FROM daily_analysis_logs 
-                WHERE symbol = ? AND date = ?
+                WHERE session_id = ? AND symbol = ? AND date = ?
                 ORDER BY timestamp DESC
             """,
-                (symbol, date),
+                (self.session_id, symbol, date),
             )
 
             existing_records = cursor.fetchall()

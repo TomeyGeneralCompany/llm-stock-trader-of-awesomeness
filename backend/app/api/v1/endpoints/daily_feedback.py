@@ -22,6 +22,7 @@ class DailyFeedbackRequest(BaseModel):
     feedback: str
     date: str  # YYYY-MM-DD
     symbol: str = None  # Optional symbol, if not provided will search all symbols
+    run_id: Optional[str] = None  # Exact ownership for staged runs
 
 
 class DailyImprovementResponse(BaseModel):
@@ -61,10 +62,10 @@ async def analyze_daily_decision(
         cursor.execute(
             """
             SELECT DISTINCT session_id, symbol FROM daily_analysis_logs 
-            WHERE date = ?
+            WHERE date = ? AND (? IS NULL OR session_id = ?)
             ORDER BY session_id DESC
         """,
-            (request.date,),
+            (request.date, request.run_id, request.run_id),
         )
         date_sessions = cursor.fetchall()
 

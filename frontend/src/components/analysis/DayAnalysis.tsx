@@ -16,6 +16,7 @@ interface DayAnalysisProps {
 
 interface DailyFeedbackSectionProps {
   date: string
+  runId: string
 }
 
 interface DailyImprovementResponse {
@@ -393,6 +394,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
               <CardContent>
                 <DailyFeedbackSection 
                   date={state.selectedDate}
+                  runId={runId}
                 />
               </CardContent>
             </Card>
@@ -418,7 +420,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
   )
 }
 
-const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => {
+const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date, runId }) => {
   const [feedback, setFeedback] = useState('')
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [result, setResult] = useState<DailyImprovementResponse | null>(null)
@@ -441,7 +443,8 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
         },
         body: JSON.stringify({
           feedback: feedback.trim(),
-          date: date
+          date: date,
+          run_id: runId
         })
       })
 

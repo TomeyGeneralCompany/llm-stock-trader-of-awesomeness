@@ -18,8 +18,18 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from ....backtesting.engine import BacktestConfig, BacktestEngine
+from ....backtesting.gates import (
+    GateCancelled,
+    GateError,
+    GateStore,
+    Stage,
+    StageGateController,
+    frame_records,
+)
 from ....llm.strategies.base import StrategyConfig
-from ....llm.strategies.llm_strategy import LLMSmartStrategy  # Switch back to original version
+from ....llm.strategies.llm_strategy import (
+    LLMSmartStrategy,  # Switch back to original version
+)
 from ....utils.stock_data import StockService
 
 router = APIRouter()
@@ -72,12 +82,18 @@ async def stream_llm_backtest(
     max_position_size: float = Query(0.3, description="Maximum position allocation"),
     stop_loss: float = Query(0.05, description="Stop-loss fraction"),
     take_profit: float = Query(0.1, description="Take-profit fraction"),
+    session_id: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=120,
+        description="Run identifier for stage evidence and analysis logs",
+    ),
 ):
     """
     Streaming LLM strategy backtest - using Server-Sent Events
     Unlimited-capital mode: Use a fixed large capital amount, Focus on pure trading P&L calculations
     """
-    # Use unlimited-capital mode (1 hundred million USD) 
+    # Use unlimited-capital mode (1 hundred million USD)
     initial_capital = 100000000.0
     try:
 
@@ -106,13 +122,30 @@ async def stream_llm_backtest(
 
                 # If additional data exists (such as P&L Information) , add it to progress data
                 if extra_data:
-                    progress_data.update(extra_data)
+                    progress_data.update(
+                        {k: v for k, v in extra_data.items() if k not in progress_data}
+                    )
 
                 message_queue.put(progress_data)
 
             def run_backtest():
                 """Run backtest in a separate thread"""
+                gates = None
                 try:
+                    gates = StageGateController(
+                        run_id=session_id,
+                        request={
+                            "symbol": symbol,
+                            "period": period,
+                            "max_position_size": max_position_size,
+                            "stop_loss": stop_loss,
+                            "take_profit": take_profit,
+                        },
+                        callback=lambda state: message_queue.put(
+                            {"type": "stage_gate", "data": state}
+                        ),
+                    )
+                    gates.start(Stage.ACQUIRE)
                     # 1. Get stock data
                     message_queue.put(
                         {
@@ -126,10 +159,9 @@ async def stream_llm_backtest(
                     stock_data_list = stock_service.get_market_data(symbol, period)
 
                     if not stock_data_list or len(stock_data_list) < 30:
-                        message_queue.put(
-                            {"type": "error", "message": "Insufficient stock data, Cannot run backtest"}
+                        raise GateError(
+                            "Insufficient stock data; at least 30 observations are required."
                         )
-                        return
 
                     # Convert to DataFrame, backtest engine Requires DataFrame format
                     stock_data = pd.DataFrame(stock_data_list)
@@ -137,7 +169,10 @@ async def stream_llm_backtest(
                     stock_data["date"] = pd.to_datetime(stock_data["date"])
                     stock_data.set_index("date", inplace=True)
                     # Rename columns to standard format (lowercase, because the strategy and engine expect lowercase column names)
-                    stock_data.columns = ["open", "high", "low", "close", "volume"]
+                    stock_data.columns = [
+                        str(column).lower() for column in stock_data.columns
+                    ]
+                    gates.complete(Stage.ACQUIRE, {"rows": frame_records(stock_data)})
 
                     message_queue.put(
                         {
@@ -171,7 +206,7 @@ async def stream_llm_backtest(
                             "log_path": os.path.join(
                                 "backend", "data", "backtest_logs.db"
                             ),
-                            "session_id": f"api_session_{symbol}_{int(time.time())}",
+                            "session_id": gates.run_id,
                         },
                     )
 
@@ -190,41 +225,30 @@ async def stream_llm_backtest(
                     backtest_config = BacktestConfig(initial_capital=initial_capital)
                     backtest_engine = BacktestEngine(backtest_config)
 
-                    # Run backtest
-                    backtest_result = backtest_engine.run_backtest(
-                        stock_data=stock_data,
-                        strategy=strategy,
-                        initial_cash=initial_capital,
-                        symbol=symbol,
-                    )
+                    def build_report(backtest_result):
+                        # Convert DataFrame Convert to a JSON serializable format
+                        stock_data_json = []
+                        for row in gates.store.artifact(gates.run_id, Stage.ACQUIRE)[
+                            "rows"
+                        ]:
+                            stock_data_json.append(
+                                {
+                                    "timestamp": pd.Timestamp(
+                                        row["timestamp"]
+                                    ).strftime("%Y-%m-%d"),
+                                    "open": float(row["open"]),
+                                    "high": float(row["high"]),
+                                    "low": float(row["low"]),
+                                    "close": float(row["close"]),
+                                    "volume": int(row["volume"]),
+                                }
+                            )
 
-                    # 4. Send results
-                    message_queue.put(
-                        {
-                            "type": "progress",
-                            "step": "analysis",
-                            "message": "Analyze backtest results...",
-                        }
-                    )
-
-                    # Convert DataFrame Convert to a JSON serializable format
-                    stock_data_json = []
-                    for date, row in stock_data.iterrows():
-                        stock_data_json.append(
-                            {
-                                "timestamp": date.strftime("%Y-%m-%d"),
-                                "open": float(row["open"]),
-                                "high": float(row["high"]),
-                                "low": float(row["low"]),
-                                "close": float(row["close"]),
-                                "volume": int(row["volume"]),
-                            }
-                        )
-
-                    # Extract from strategy object LLM Decision recording
-                    llm_decisions = []
-                    if hasattr(strategy, "decision_log"):
-                        for log_entry in strategy.decision_log:
+                        # Extract from strategy object LLM Decision recording
+                        llm_decisions = []
+                        for log_entry in gates.store.artifact(
+                            gates.run_id, Stage.ANALYZE
+                        )["decisions"]:
                             # Handle safely decision, Ensure no operation on None Call .get()
                             decision = log_entry.get("decision", {})
                             if decision is None:
@@ -244,66 +268,86 @@ async def stream_llm_backtest(
                                 }
                             )
 
-                    result_data = {
-                        "type": "result",
-                        "data": {
-                            "trades": backtest_result.get("trades", []),
-                            "performance": backtest_result.get(
-                                "performance_metrics", {}
-                            ),
-                            "stock_data": stock_data_json,
-                            "signals": backtest_result.get(
-                                "trading_signals", []
-                            ),  # Correction: using trading_signals instead of signals
-                            "llm_decisions": llm_decisions,
-                            "statistics": {
-                                # Use strategy statistics, These are actual trading P&L figures
-                                "total_trades": backtest_result.get(
-                                    "strategy_statistics", {}
-                                ).get("total_trades", 0),
-                                "win_rate": backtest_result.get(
-                                    "strategy_statistics", {}
-                                ).get("strategy_win_rate", 0)
-                                * 100,  # Convert to percentage
-                                "total_return": backtest_result.get(
-                                    "strategy_statistics", {}
-                                ).get("cumulative_trade_return_rate", 0)
-                                * 100,  # Convert to percentage
-                                "max_drawdown": backtest_result.get(
+                        result_data = {
+                            "type": "result",
+                            "data": {
+                                "trades": backtest_result.get("trades", []),
+                                "performance": backtest_result.get(
                                     "performance_metrics", {}
-                                ).get("max_drawdown", 0),
-                                "final_value": backtest_result.get(
-                                    "performance_metrics", {}
-                                ).get("final_value", 0),
-                                "annual_return": backtest_result.get(
-                                    "performance_metrics", {}
-                                ).get("annual_return", 0),
-                                "volatility": backtest_result.get(
-                                    "performance_metrics", {}
-                                ).get("volatility", 0),
-                                "num_trades": backtest_result.get(
+                                ),
+                                "stock_data": stock_data_json,
+                                "signals": backtest_result.get(
+                                    "trading_signals", []
+                                ),  # Correction: using trading_signals instead of signals
+                                "llm_decisions": llm_decisions,
+                                "statistics": {
+                                    # Use strategy statistics, These are actual trading P&L figures
+                                    "total_trades": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("total_trades", 0),
+                                    "win_rate": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("strategy_win_rate", 0)
+                                    * 100,  # Convert to percentage
+                                    "total_return": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("cumulative_trade_return_rate", 0)
+                                    * 100,  # Convert to percentage
+                                    "max_drawdown": backtest_result.get(
+                                        "performance_metrics", {}
+                                    ).get("max_drawdown", 0),
+                                    "final_value": backtest_result.get(
+                                        "performance_metrics", {}
+                                    ).get("final_value", 0),
+                                    "annual_return": backtest_result.get(
+                                        "performance_metrics", {}
+                                    ).get("annual_return", 0),
+                                    "volatility": backtest_result.get(
+                                        "performance_metrics", {}
+                                    ).get("volatility", 0),
+                                    "num_trades": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("total_trades", 0),
+                                    # Add strategy-specific realized P&L
+                                    "total_realized_pnl": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("total_realized_pnl", 0),
+                                    "winning_trades": backtest_result.get(
+                                        "strategy_statistics", {}
+                                    ).get("winning_trades", 0),
+                                },
+                                "strategy_statistics": backtest_result.get(
                                     "strategy_statistics", {}
-                                ).get("total_trades", 0),
-                                # Add strategy-specific realized P&L
-                                "total_realized_pnl": backtest_result.get(
-                                    "strategy_statistics", {}
-                                ).get("total_realized_pnl", 0),
-                                "winning_trades": backtest_result.get(
-                                    "strategy_statistics", {}
-                                ).get("winning_trades", 0),
+                                ),
                             },
-                            "strategy_statistics": backtest_result.get(
-                                "strategy_statistics", {}
-                            ),
-                        },
-                    }
+                        }
 
-                    message_queue.put(result_data)
-                    message_queue.put(
-                        {"type": "complete", "message": "LLM Strategy backtest completed!"}
+                        result_data["data"]["run_id"] = gates.run_id
+                        return result_data["data"]
+
+                    # Run backtest
+                    backtest_result = backtest_engine.run_backtest(
+                        stock_data=stock_data,
+                        strategy=strategy,
+                        initial_cash=initial_capital,
+                        symbol=symbol,
+                        gates=gates,
+                        report_builder=build_report,
                     )
 
+                    message_queue.put({"type": "result", "data": backtest_result})
+                    message_queue.put(
+                        {
+                            "type": "complete",
+                            "message": "LLM Strategy backtest completed!",
+                        }
+                    )
+
+                except GateCancelled as e:
+                    message_queue.put({"type": "cancelled", "message": str(e)})
                 except Exception as e:
+                    if gates is not None:
+                        gates.fail(e)
                     message_queue.put(
                         {"type": "error", "message": f"Error during backtest: {str(e)}"}
                     )
@@ -335,7 +379,7 @@ async def stream_llm_backtest(
         # Return SSE Response
         return StreamingResponse(
             generate_backtest_stream(),
-            media_type="text/plain",
+            media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
@@ -344,7 +388,40 @@ async def stream_llm_backtest(
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unable to start streaming backtest: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Unable to start streaming backtest: {str(e)}"
+        )
+
+
+@router.get("/runs/{run_id}")
+async def get_stage_status(run_id: str):
+    """Read controller-owned stage status after a run or browser disconnect."""
+    try:
+        return GateStore().snapshot(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Stage run not found")
+    except GateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/stop")
+async def stop_at_stage_boundary(run_id: str):
+    """Finish the current stage and stop before beginning the next one."""
+    try:
+        return GateStore().request_stop(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Stage run not found")
+    except GateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/runs/{run_id}/artifacts/{stage}")
+async def get_stage_artifact(run_id: str, stage: Stage):
+    """Read a saved handoff after verifying its content hash."""
+    try:
+        return GateStore().artifact(run_id, stage)
+    except GateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/llm-backtest-stream/status")

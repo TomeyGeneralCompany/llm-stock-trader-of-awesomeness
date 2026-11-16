@@ -14,7 +14,7 @@ import { BacktestChart } from '@/components/charts/BacktestChart'
 import BacktestResultsWithAnalysis from '@/components/analysis/BacktestResultsWithAnalysis'
 
 interface StreamMessage {
-  type: 'start' | 'progress' | 'trading_progress' | 'result' | 'complete' | 'error'
+  type: 'start' | 'progress' | 'trading_progress' | 'result' | 'complete' | 'error' | 'stage_gate' | 'cancelled'
   message?: string
   step?: string
   day?: number
@@ -104,6 +104,21 @@ interface BacktestResult {
   }
 }
 
+interface PipelineState {
+  run_id: string
+  status: string
+  active_stage: string | null
+  error: string | null
+  stages: Array<{
+    stage: string
+    status: string
+    sha256?: string
+    evidence?: Record<string, unknown>
+  }>
+}
+
+const STAGES = ['ACQUIRE', 'PREPARE', 'ANALYZE', 'SIMULATE', 'REVIEW', 'REPORT']
+
 export default function StreamingLLMRunner() {
   const [symbol, setSymbol] = useState('AAPL')
   const [period, setPeriod] = useState('1y')
@@ -115,6 +130,9 @@ export default function StreamingLLMRunner() {
   const [messages, setMessages] = useState<string[]>([])
   const [result, setResult] = useState<BacktestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [pipeline, setPipeline] = useState<PipelineState | null>(null)
+  const [isRefreshingStage, setIsRefreshingStage] = useState(false)
+  const [isStopping, setIsStopping] = useState(false)
   const [isStarting, setIsStarting] = useState(false) // New: Prevent duplicate clicks
   const [currentRunId, setCurrentRunId] = useState<string | null>(null) // New: Track the current backtest’s unique identifier
   
@@ -173,7 +191,7 @@ export default function StreamingLLMRunner() {
 
     // Generate unique session ID and runId
     const sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-    const runId = `run-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const runId = sessionId
     sessionIdRef.current = sessionId
     setCurrentRunId(runId)
     console.log('Start a new streaming backtest, Session ID:', sessionId, 'Run ID:', runId)
@@ -189,6 +207,8 @@ export default function StreamingLLMRunner() {
     setMessages([])
     setResult(null)
     setError(null)
+    setPipeline(null)
+    setIsStopping(false)
     setPnlStatus(null) // Reset P&L State
     
     // Reset real-time signal data
@@ -228,6 +248,17 @@ export default function StreamingLLMRunner() {
           }
           
           switch (data.type) {
+            case 'stage_gate':
+              setPipeline(data.data as PipelineState)
+              setCurrentRunId(data.data.run_id)
+              break
+            case 'cancelled':
+              addMessage(data.message || 'Stopped at a stage boundary')
+              setIsRunning(false)
+              setIsStarting(false)
+              setIsStopping(false)
+              cleanupEventSource()
+              break
             case 'start':
               addMessage(data.message || 'Start backtest...')
               break
@@ -436,11 +467,56 @@ export default function StreamingLLMRunner() {
     }
   }
 
-  const stopStreaming = () => {
-    console.log('Manually stop stream')
-    cleanupEventSource()
-    setIsRunning(false)
-    setIsStarting(false)
+  const stopStreaming = async () => {
+    if (!currentRunId) return
+    setIsStopping(true)
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId) + '/stop', { method: 'POST' })
+      if (!response.ok) throw new Error('Unable to request a stop; try again after the run starts')
+      setPipeline(await response.json())
+      setCurrentStep('Stop requested. The current stage will finish and save its evidence.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to request a stop')
+      setIsStopping(false)
+    }
+  }
+
+  const refreshStageStatus = async () => {
+    if (!currentRunId) return
+    setIsRefreshingStage(true)
+    try {
+      const base = 'http://localhost:8000/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId)
+      const response = await fetch(base)
+      if (!response.ok) throw new Error('Unable to load saved stage status')
+      const saved: PipelineState = await response.json()
+      setPipeline(saved)
+      setError(null)
+      if (['pending', 'waiting', 'running'].includes(saved.status)) {
+        setIsRunning(true)
+        setIsStarting(false)
+      }
+      if (saved.status === 'completed') {
+        const artifact = await fetch(base + '/artifacts/REPORT')
+        if (!artifact.ok) throw new Error('Saved report failed its integrity check')
+        const report = await artifact.json()
+        setResult(report.view)
+        setError(null)
+        setProgress(100)
+        setIsRunning(false)
+        setIsStarting(false)
+        cleanupEventSource()
+      } else if (saved.status === 'failed' || saved.status === 'cancelled') {
+        setError(saved.status === 'failed' ? saved.error || 'A stage gate failed' : null)
+        setIsRunning(false)
+        setIsStarting(false)
+        cleanupEventSource()
+        setIsStopping(false)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load saved stage status')
+    } finally {
+      setIsRefreshingStage(false)
+    }
   }
 
   return (
@@ -516,9 +592,9 @@ export default function StreamingLLMRunner() {
             </Button>
             
             {(isRunning || isStarting) && (
-              <Button onClick={stopStreaming} variant="destructive">
+              <Button onClick={stopStreaming} variant="destructive" disabled={isStopping}>
                 <Square className="mr-2 h-4 w-4" />
-                Stop
+                {isStopping ? 'Stopping after stage...' : 'Stop after stage'}
               </Button>
             )}
           </div>
@@ -526,6 +602,44 @@ export default function StreamingLLMRunner() {
       </Card>
 
       {/* Progress display */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">Stage gates {pipeline && <Badge variant="outline">{pipeline.status}</Badge>}</span>
+            {currentRunId && (
+              <Button variant="outline" size="sm" onClick={refreshStageStatus} disabled={isRefreshingStage}>
+                {isRefreshingStage ? 'Loading...' : 'Refresh saved status'}
+              </Button>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-gray-600">
+            Each stage must save validated evidence before the controller advances. One heavy stage runs at a time.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {STAGES.map((stage, index) => {
+              const record = pipeline?.stages.find(item => item.stage === stage)
+              const status = record?.status || 'pending'
+              const color = status === 'completed' ? 'border-green-300 bg-green-50' :
+                status === 'running' ? 'border-blue-400 bg-blue-50' :
+                status === 'failed' ? 'border-red-400 bg-red-50' : 'border-gray-200 bg-gray-50'
+              return (
+                <div key={stage} className={`rounded-lg border p-3 ${color}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-semibold">{index + 1}. {stage}</span>
+                    <Badge variant="outline">{status}</Badge>
+                  </div>
+                  {record?.sha256 && <p className="mt-2 text-xs text-gray-500">Evidence saved: {record.sha256.slice(0, 12)}</p>}
+                  {record?.evidence && <p className="mt-1 text-xs break-words">{Object.entries(record.evidence).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join(' · ')}</p>}
+                </div>
+              )
+            })}
+          </div>
+          {pipeline?.error && <p role="alert" className="text-sm text-red-700">{pipeline.error}</p>}
+        </CardContent>
+      </Card>
+
       {isRunning && (
         <Card>
           <CardHeader>

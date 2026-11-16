@@ -14,9 +14,11 @@ Open `http://localhost:3000` after starting the application.
 | Backtest period | Historical period: six months, one year, two years, or five years. |
 | Capital mode | The existing application uses a large fixed starting balance, described as unlimited-capital mode in the interface. |
 | Start streaming backtest | Starts the historical replay and displays incoming decisions. |
-| Stop | Closes the browser's progress stream. |
+| Stop after stage | Requests a backend stop after the active stage finishes and saves its evidence. |
 
 ## Live Progress and Performance
+
+The **Stage gates** panel shows the controller's current stage, each gate's status, and saved evidence hashes. **Stop after stage** requests a controlled stop once the current stage has finished and saved its output. **Refresh saved status** reloads durable status and retrieves a completed report after a browser disconnect. See the [stage gate guide](stage-gates.md).
 
 During a run, the dashboard displays processing progress, completed trades, strategy win rate, cumulative realized P&L, and cumulative trade return.
 

@@ -387,7 +387,9 @@ Please respond in JSON format with your decision:
         self._last_performance_update_day = -1  # Track the day of the last performance update, Avoid duplicates
         self._last_trend_update_day = -1  # Track the day of the last trend update
 
+        self.analysis_rows_processed = min(30, len(data))
         for i in range(30, len(data)):  # from 30 days onward, instead of 100 days
+            self.analysis_rows_processed = i + 1
             self._current_day_index = i  # Set current index for other methods
 
             # Periodically reanalyze the overall trend (Every 30 days or after important changes) 

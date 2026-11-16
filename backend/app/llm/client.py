@@ -2,17 +2,16 @@
 
 import asyncio
 import json
-import threading
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 import httpx
 
 from app.config import settings
+from app.stage_resources import StageResourceError, inference_resources
 
-# All client instances share one inference slot in the backend process.
+# All client instances share the installation's heavy-work resource slot.
 # This includes backtests, retrospective analysis, and daily feedback.
-_inference_lock = threading.Lock()
 
 
 class OllamaError(RuntimeError):
@@ -94,11 +93,13 @@ class OllamaClient:
             config.timeout_seconds or None, connect=5.0, write=30.0, pool=5.0
         )
         try:
-            with _inference_lock:
+            with inference_resources():
                 # Ignore proxy environment variables for this local connection.
                 with httpx.Client(timeout=timeout, trust_env=False) as client:
                     response = client.post(f"{config.base_url}/api/chat", json=payload)
                     response.raise_for_status()
+        except StageResourceError as exc:
+            raise OllamaError(str(exc)) from exc
         except httpx.ConnectError as exc:
             raise OllamaError(
                 f"Cannot connect to Ollama at {config.base_url}. "
