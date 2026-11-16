@@ -5,6 +5,8 @@
 Stock trading backtesting system using local Qwen 3 inference through Ollama.
 [Read the English interface guide](docs/interface-guide.md) for backtest controls, decision logs, charts, and daily strategy discussions.
 
+To try responses from a work computer using only GitHub, open **Actions → Ask the Trader → Run workflow**. Enter a question and read the answer in the run summary. See [GitHub response testing](docs/github-response-test.md) for the sample-trader and free-form modes.
+
 The interface, prompts, explanations, logs, comments, and project documentation use English. The original uploaded ZIP remains an unchanged upstream archive.
 
 Backtests follow enforced stages: **ACQUIRE → PREPARE → ANALYZE → SIMULATE → REVIEW → REPORT**. Each gate validates and saves its handoff before the next stage starts. The dashboard shows stage status, evidence, and **Stop after stage**. See the [stage gate guide](docs/stage-gates.md) for completion criteria and resource settings.

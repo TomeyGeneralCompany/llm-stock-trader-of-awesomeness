@@ -1,0 +1,87 @@
+name: Ask the Trader
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Response test'
+        type: choice
+        required: true
+        default: trader-sample
+        options:
+          - trader-sample
+          - model-question
+      prompt:
+        description: 'Your question (displayed in this public workflow run)'
+        type: string
+        required: true
+        default: 'Explain your decision and what evidence would change it.'
+
+permissions:
+  contents: read
+
+jobs:
+  answer:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: backend
+      OLLAMA_BASE_URL: http://127.0.0.1:11434
+      OLLAMA_MODEL: qwen3:4b
+      OLLAMA_NUM_THREAD: '4'
+      OLLAMA_NUM_CTX: '8192'
+      OLLAMA_THINK: 'false'
+      OLLAMA_TIMEOUT_SECONDS: '0'
+      TRADER_TEST_MODE: ${{ inputs.mode }}
+      TRADER_TEST_PROMPT: ${{ inputs.prompt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python dependencies
+        run: |
+          pip install uv
+          uv sync --locked
+      - name: Install and start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags > /dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            cat "$RUNNER_TEMP/ollama.log"
+            exit 1
+          fi
+      - name: Load Qwen 3 4B
+        run: |
+          ollama pull qwen3:4b
+          ollama list
+      - name: Ask the current application model
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p trader-response
+          uv run python -m app.ask_trader 2>&1 | tee trader-response/execution.log
+      - name: Save response and diagnostic logs
+        if: always()
+        run: |
+          mkdir -p trader-response
+          if [ -f "$RUNNER_TEMP/ollama.log" ]; then
+            cp "$RUNNER_TEMP/ollama.log" trader-response/ollama.log
+          fi
+          if [ ! -f trader-response/response.md ]; then
+            printf '# Ask the Trader\n\nSetup did not finish. Open the failed step and the diagnostic artifact for details.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trader-response
+          path: trader-response/
+          retention-days: 7
