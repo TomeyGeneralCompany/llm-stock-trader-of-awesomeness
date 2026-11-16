@@ -79,9 +79,12 @@ def safe_json_dumps(obj):
 async def stream_llm_backtest(
     symbol: str = Query(..., description="Stock symbol"),
     period: str = Query("1y", description="Backtest period"),
-    max_position_size: float = Query(0.3, description="Maximum position allocation"),
-    stop_loss: float = Query(0.05, description="Stop-loss fraction"),
-    take_profit: float = Query(0.1, description="Take-profit fraction"),
+    max_position_size: float = Query(0.3, gt=0, le=1, description="Maximum position allocation"),
+    stop_loss: float = Query(0.05, ge=0, lt=1, description="Stop-loss fraction"),
+    take_profit: float = Query(0.1, ge=0, description="Take-profit fraction"),
+    initial_capital: float = Query(10000.0, gt=0, description="Starting cash"),
+    commission_rate: float = Query(0.001, ge=0, lt=1, description="Commission fraction per fill"),
+    min_commission: float = Query(0.0, ge=0, description="Minimum commission per fill"),
     session_id: Optional[str] = Query(
         None,
         min_length=1,
@@ -91,10 +94,8 @@ async def stream_llm_backtest(
 ):
     """
     Streaming LLM strategy backtest - using Server-Sent Events
-    Unlimited-capital mode: Use a fixed large capital amount, Focus on pure trading P&L calculations
+    Decisions and historical fills share a finite controller-owned account.
     """
-    # Use unlimited-capital mode (1 hundred million USD)
-    initial_capital = 100000000.0
     try:
 
         def generate_backtest_stream() -> Generator[str, None, None]:
@@ -137,6 +138,9 @@ async def stream_llm_backtest(
                         request={
                             "symbol": symbol,
                             "period": period,
+                            "initial_capital": initial_capital,
+                            "commission_rate": commission_rate,
+                            "min_commission": min_commission,
                             "max_position_size": max_position_size,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
@@ -197,6 +201,8 @@ async def stream_llm_backtest(
                         description="AI-powered trading strategy with real-time analysis",
                         parameters={
                             "initial_capital": initial_capital,
+                            "commission_rate": commission_rate,
+                            "min_commission": min_commission,
                             "max_position_size": max_position_size,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
@@ -322,6 +328,8 @@ async def stream_llm_backtest(
                             },
                         }
 
+                        result_data["data"]["execution_settings"] = backtest_result["execution_settings"]
+                        result_data["data"]["orders"] = backtest_result["orders"]
                         result_data["data"]["run_id"] = gates.run_id
                         return result_data["data"]
 
@@ -330,6 +338,11 @@ async def stream_llm_backtest(
                         stock_data=stock_data,
                         strategy=strategy,
                         initial_cash=initial_capital,
+                        transaction_cost=commission_rate,
+                        min_commission=min_commission,
+                        max_position_size=max_position_size,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
                         symbol=symbol,
                         gates=gates,
                         report_builder=build_report,

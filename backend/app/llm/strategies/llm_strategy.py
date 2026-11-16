@@ -104,15 +104,15 @@ class LLMSmartStrategy(TradingStrategy):
 
         # Risk management parameters
         self.max_loss_threshold = config.parameters.get(
-            "max_loss_threshold", 0.10
+            "max_loss_threshold", config.parameters.get("stop_loss", 0.05)
         )  # 10%Stop loss
         self.profit_taking_threshold = config.parameters.get(
-            "profit_taking_threshold", 0.15
+            "profit_taking_threshold", config.parameters.get("take_profit", 0.1)
         )  # 15%Take profit
         self.position_sizing_adjustment = config.parameters.get(
             "position_sizing_adjustment", True
         )
-        self.position_size = config.parameters.get("position_size", 0.2)  # Default 20%Position allocation
+        self.position_size = config.parameters.get("max_position_size", config.parameters.get("position_size", 0.3))  # Default 20%Position allocation
 
         # LLM Call statistics
         self.total_llm_calls = 0
@@ -125,6 +125,7 @@ class LLMSmartStrategy(TradingStrategy):
         self.current_symbol = None  # Current trading symbol
         self.position_entry_price = 0.0  # Entry price
         self.position_entry_date = None  # Entry date
+        self.execution_controller = None
         self.shares = 0  # Shares held
         self.cash = self.initial_capital  # Cash balance
         self.total_trades = 0
@@ -247,7 +248,7 @@ class LLMSmartStrategy(TradingStrategy):
                 self.pnl_tracker = None
 
         # First step: Analyze stock characteristics (using early-period data) 
-        self.stock_characteristics = self._analyze_stock_characteristics(data)
+        self.stock_characteristics = self._analyze_stock_characteristics(data.iloc[:30])
 
         # Dynamically adjust technical parameters based on stock characteristics
         self._adjust_technical_parameters()
@@ -255,128 +256,20 @@ class LLMSmartStrategy(TradingStrategy):
         # Calculate technical indicators
         data = self._calculate_all_indicators(data)
 
-        # Analyze trends - Add strict data length checks
-        print(f"🔍 Prepare trend analysis data...")
-
-        # Ensure sufficient data for analysis
-        print(f"🔍 Data check: Total observations = {len(data)}")
-        if len(data) < 50:
-            print(f"⚠️ Insufficient data for trend analysis ({len(data)} < 50), Use simplified analysis")
-            # Create simplified trend analysis results
-            from types import SimpleNamespace
-
-            trend_analysis = SimpleNamespace()
-            trend_analysis.dominant_trend = "sideways"
-            trend_analysis.complexity_score = 0.5
-            trend_analysis.confidence = 0.3
-        else:
-            print(f"✅ Sufficient data ({len(data)} >= 50), Start full trend analysis")
-            # Convert DataFrame to the required format, and validate the data
-            market_data_list = []
-            valid_rows = 0
-
-            for idx, row in data.iterrows():
-                # Check data completeness
-                close_price = row["close"]
-                if pd.isna(close_price) or close_price <= 0:
-                    print(f"⚠️ Skip invalid data row: {idx}, close_price={close_price}")
-                    continue
-
-                market_data_list.append(
-                    {
-                        "date": idx.strftime("%Y-%m-%d")
-                        if hasattr(idx, "strftime")
-                        else str(idx),
-                        "close": float(close_price),
-                        "open": float(row["open"])
-                        if "open" in row and not pd.isna(row["open"])
-                        else float(close_price),
-                        "high": float(row["high"])
-                        if "high" in row and not pd.isna(row["high"])
-                        else float(close_price),
-                        "low": float(row["low"])
-                        if "low" in row and not pd.isna(row["low"])
-                        else float(close_price),
-                        "volume": float(row["volume"])
-                        if "volume" in row and not pd.isna(row["volume"])
-                        else 0,
-                    }
-                )
-                valid_rows += 1
-
-            print(f"📊 Valid rows: {valid_rows}/{len(data)}")
-
-            # Recheck data quantity after cleaning
-            if len(market_data_list) < 30:
-                print(
-                    f"⚠️ Insufficient data after cleaning ({len(market_data_list)} < 30), Use simplified analysis"
-                )
-                from types import SimpleNamespace
-
-                trend_analysis = SimpleNamespace()
-                trend_analysis.dominant_trend = "sideways"
-                trend_analysis.complexity_score = 0.5
-                trend_analysis.confidence = 0.3
-            else:
-                print(
-                    f"✅ Sufficient data after cleaning ({len(market_data_list)} >= 30), Call trend analyzer..."
-                )
-                print(f"🔍 Start Enhanced Trend analysis...")
-                try:
-                    symbol = self.current_symbol or "UNKNOWN"
-                    print(f"📈 Analyze stock: {symbol}")
-
-                    # Get current date from market data
-                    current_date = None
-                    if market_data_list:
-                        last_data = market_data_list[-1]
-                        current_date = (
-                            last_data.get("date")
-                            if isinstance(last_data, dict)
-                            else None
-                        )
-                        print(f"📅 Current date: {current_date}")
-
-                    # Ensure current_date is a string
-                    current_date_str = None
-                    if current_date:
-                        if hasattr(current_date, "strftime"):
-                            current_date_str = current_date.strftime("%Y-%m-%d")
-                        elif isinstance(current_date, str):
-                            current_date_str = current_date
-                        else:
-                            current_date_str = str(current_date)
-
-                    enhanced_result = self.trend_analyzer.analyze_with_llm_optimization(
-                        symbol, current_date_str
-                    )
-
-                    # Extract traditional trend analysis for compatibility
-                    trend_analysis = enhanced_result.original_result
-
-                    # Store enhanced results for later use in prompts
-                    self.current_enhanced_analysis = enhanced_result
-
-                    print(f"✅ Enhanced Trend analysis completed: {enhanced_result.market_phase}")
-                    print(f"🎯 Reversal probability: {enhanced_result.reversal_probability:.2f}")
-                    print(f"📊 Trend consistency: {enhanced_result.trend_consistency:.2f}")
-                    print(f"📈 Momentum status: {enhanced_result.momentum_status}")
-                    print(f"🔍 Dominant trend: {trend_analysis.dominant_trend}")
-
-                except Exception as e:
-                    print(f"❌ Enhanced Trend analysis failed: {e}")
-                    import traceback
-
-                    print(f"🔍 Error details: {traceback.format_exc()}")
-                    # Create fallback analysis results
-                    from types import SimpleNamespace
-
-                    trend_analysis = SimpleNamespace()
-                    trend_analysis.dominant_trend = "sideways"
-                    trend_analysis.complexity_score = 0.5
-                    trend_analysis.confidence = 0.2
-                    self.current_enhanced_analysis = None
-
+        # Warmup calibration and initial trend have no access to later bars.
+        from types import SimpleNamespace
+        trend_analysis = SimpleNamespace(dominant_trend="sideways", complexity_score=0.5, confidence=0.3)
+        self.current_enhanced_analysis = None
+        if self.execution_controller is None or self.execution_controller.finished:
+            from ...backtesting.ledger import ExecutionLedger, ExecutionSettings
+            self.execution_controller = ExecutionLedger(ExecutionSettings(
+                initial_cash=self.initial_capital,
+                commission_rate=self.config.parameters.get("commission_rate", 0.001),
+                min_commission=self.config.parameters.get("min_commission", 0.0),
+                max_position_size=self.position_size,
+                stop_loss=self.max_loss_threshold, take_profit=self.profit_taking_threshold,
+            ), self.current_symbol or "UNKNOWN")
+        self._execution_data = data
         print(f"🔄 Start event-driven signal generation (Data length: {len(data)})...")
         # Event-driven signal generation
         self._total_days = len(data)  # Set total days for other methods
@@ -384,7 +277,9 @@ class LLMSmartStrategy(TradingStrategy):
         self._last_trend_update_day = -1  # Track the day of the last trend update
 
         self.analysis_rows_processed = min(30, len(data))
-        for i in range(30, len(data)):  # from 30 days onward, instead of 100 days
+        for i in range(30, len(data)):  # A decision follows the completed warmup.
+            self.execution_controller.advance(data, i)
+            self.execution_controller.sync(self)
             self.analysis_rows_processed = i + 1
             self._current_day_index = i  # Set current index for other methods
 
@@ -809,6 +704,7 @@ class LLMSmartStrategy(TradingStrategy):
                         )
                         if signal:
                             signals.append(signal)
+                            self.execution_controller.submit(signal)
                             self.daily_trade_count += 1
                             signal_msg = f"✅ Generate trading signals: {signal.signal_type} (Confidence: {confidence:.2f} >= Threshold: {self.confidence_threshold:.2f})"
                             print(signal_msg)
@@ -927,6 +823,8 @@ class LLMSmartStrategy(TradingStrategy):
             else ""
         )
 
+        self.execution_controller.finish(data)
+        self.execution_controller.sync(self)
         return signals
 
     def _analyze_stock_characteristics(self, data: pd.DataFrame) -> Dict[str, Any]:
@@ -1175,10 +1073,9 @@ class LLMSmartStrategy(TradingStrategy):
 
         # Calculate unrealized P&L
         position_value = self.shares * current_price
-        unrealized_pnl = position_value - (self.shares * self.position_entry_price)
-        unrealized_pnl_pct = (
-            unrealized_pnl / (self.shares * self.position_entry_price) * 100
-        )
+        basis = self.execution_controller.cost_basis if self.execution_controller is not None else self.shares * self.position_entry_price
+        unrealized_pnl = position_value - basis
+        unrealized_pnl_pct = unrealized_pnl / basis * 100 if basis > 0 else 0.0
 
         # Calculate holding days
         if self.position_entry_date and current_date:
@@ -1211,7 +1108,7 @@ class LLMSmartStrategy(TradingStrategy):
             "unrealized_pnl_pct": unrealized_pnl_pct,
             "holding_days": holding_days,
             "risk_level": risk_level,
-            "cost_basis": self.shares * self.position_entry_price,
+            "cost_basis": basis,
         }
 
     def _calculate_current_performance(self, current_price: float) -> Dict[str, float]:
@@ -1387,60 +1284,21 @@ class LLMSmartStrategy(TradingStrategy):
 
         return insights
 
-    def _update_position_state(
-        self, action: str, price: float, quantity: int, date: str
-    ):
-        """Update position state"""
-        if action == "BUY":
-            if self.current_position is None:
-                # Open new position
-                self.current_position = "long"
-                self.position_entry_price = price
-                self.position_entry_date = date
-                self.shares = quantity
-                self.cash -= quantity * price
-                print(f"📈 Open position: {quantity} shares @ ${price:.2f}")
-            else:
-                # Add to position (Simplified for now, Use simple average cost)
-                total_cost = self.shares * self.position_entry_price + quantity * price
-                self.shares += quantity
-                self.position_entry_price = total_cost / self.shares
-                self.cash -= quantity * price
-                print(
-                    f"📈 Add to position: +{quantity} shares @ ${price:.2f}, Average cost: ${self.position_entry_price:.2f}"
-                )
-
-        elif action == "SELL":
-            if self.current_position is not None:
-                # Calculate realized P&L
-                sell_value = quantity * price
-                cost_basis = quantity * self.position_entry_price
-                realized_pnl = sell_value - cost_basis
-                realized_pnl_pct = (realized_pnl / cost_basis) * 100
-
-                self.cash += sell_value
-                self.shares -= quantity
-
-                if self.shares <= 0:
-                    # Close entire position
-                    print(
-                        f"📉 Close position: {quantity} shares @ ${price:.2f}, Realized P&L: ${realized_pnl:,.0f} ({realized_pnl_pct:+.1f}%)"
-                    )
-                    self.current_position = None
-                    self.position_entry_price = 0.0
-                    self.position_entry_date = None
-                    self.shares = 0
-                else:
-                    # Close partial position
-                    print(
-                        f"📉 Reduce position: -{quantity} shares @ ${price:.2f}, Realized P&L: ${realized_pnl:,.0f} ({realized_pnl_pct:+.1f}%)"
-                    )
-
-                # Note: Trade statistics are updated in _create_signal_from_decision updated there, Do not update again here
+    def _update_position_state(self, *args, **kwargs):
+        raise RuntimeError("Only the execution controller can mutate holdings; submit a signal instead.")
 
     def calculate_position_size(self, price: float) -> int:
-        """Calculate suggested position size - Fixed 1000 shares"""
-        return 1000
+        """Indicative size at close; execution reclamps for the next opening price."""
+        if self.execution_controller is not None:
+            return self.execution_controller.quantity(price)
+        from ...backtesting.ledger import ExecutionLedger, ExecutionSettings
+        view = ExecutionLedger(ExecutionSettings(
+            initial_cash=self.initial_capital, max_position_size=self.position_size,
+            commission_rate=self.config.parameters.get("commission_rate", 0.001),
+            min_commission=self.config.parameters.get("min_commission", 0.0),
+        ), self.current_symbol or "UNKNOWN")
+        view.cash, view.shares = self.cash, self.shares
+        return view.quantity(price)
 
     def _calculate_all_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """Calculate all technical indicators"""
@@ -2047,118 +1905,11 @@ class LLMSmartStrategy(TradingStrategy):
         self.current_symbol = symbol
         print(f"📊 Set trading symbol: {symbol}")
 
-    def finalize_backtest(
-        self, final_price: float, final_timestamp: pd.Timestamp
-    ) -> None:
-        """
-        Force settlement of all positions at backtest end
-
-        Args:
-            final_price: Closing price of the final trading day
-            final_timestamp: Timestamp of the final trading day
-        """
-        if self.shares > 0 and self.current_position:
-            print(f"🏁 Backtest end, Force settlement of positions...")
-            print(f"💰 Position quantity: {self.shares} shares")
-            print(f"📈 Settlement price: ${final_price:.2f}")
-
-            # Calculate realized P&L
-            sale_value = self.shares * final_price
-            cost_basis = (
-                self.shares * self.position_entry_price
-                if self.position_entry_price > 0
-                else 0
-            )
-            realized_pnl = sale_value - cost_basis
-            realized_return = (realized_pnl / cost_basis * 100) if cost_basis > 0 else 0
-
-            print(f"💵 Settlement amount: ${sale_value:,.0f}")
-            if cost_basis > 0:
-                print(f"🎯 Cost basis: ${cost_basis:,.0f}")
-                print(f"📊 Realized P&L: ${realized_pnl:,.0f} ({realized_return:+.2f}%)")
-
-            # Update cumulative realized P&L and trade statistics
-            if cost_basis > 0:
-                self.total_realized_pnl += realized_pnl
-                self.trade_returns.append(realized_return)  # Record this trade’s return
-                self.total_trades += 1
-                is_winning_trade = realized_pnl > 0
-                if is_winning_trade:
-                    self.winning_trades += 1
-
-                # Calculate current win rate
-                current_win_rate = (
-                    (self.winning_trades / self.total_trades * 100)
-                    if self.total_trades > 0
-                    else 0.0
-                )
-                print(f"💰 Cumulative realized P&L: ${self.total_realized_pnl:,.2f}")
-                print(
-                    f"📊 Trading statistics: Day {self.total_trades} trades completed, Win rate {current_win_rate:.1f}% ({self.winning_trades}/{self.total_trades})"
-                )
-
-            # Update cash balance
-            self.cash += sale_value
-
-            # Calculate overall backtest statistics
-            total_return = (
-                ((self.cash - self.initial_capital) / self.initial_capital * 100)
-                if self.initial_capital > 0
-                else 0
-            )
-            print(f"\n📊 === Complete backtest statistics ===")
-            print(f"💰 Initial capital: ${self.initial_capital:,.2f}")
-            print(f"💵 Final capital: ${self.cash:,.2f}")
-            print(f"📈 Total return: {total_return:+.2f}%")
-            print(f"🎯 Cumulative realized P&L: ${self.total_realized_pnl:,.2f}")
-            print(f"📊 Total trades: {self.total_trades}")
-            if self.total_trades > 0:
-                print(f"✅ Winning trades: {self.winning_trades}")
-                print(
-                    f"📊 Overall win rate: {self.winning_trades / self.total_trades * 100:.1f}%"
-                )
-                print(
-                    f"💰 Average P&L per trade: ${self.total_realized_pnl / self.total_trades:,.2f}"
-                )
-
-            # Clear position
-            final_shares = self.shares  # Save share quantity for signal creation
-            self.shares = 0
-            self.current_position = None
-
-            # Create settlement trade record
-            final_signal = TradingSignal(
-                timestamp=final_timestamp,
-                signal_type=SignalType.SELL,
-                price=final_price,
-                confidence=1.0,
-                reason="Forced settlement at backtest end",
-                metadata={"quantity": final_shares},  # Convert quantity Insert into metadata
-            )
-
-            # if present P&L tracker, Update final state
-            if (
-                hasattr(self, "pnl_tracker")
-                and self.pnl_tracker
-                and hasattr(self, "current_position_id")
-                and self.current_position_id is not None
-            ):
-                try:
-                    self.pnl_tracker.close_position(
-                        self.current_position_id,
-                        final_price,
-                        final_timestamp.strftime("%Y-%m-%d"),
-                    )
-                    self.current_position_id = None  # Clear position ID
-                    print(f"📊 P&L Tracker final state updated")
-                except Exception as e:
-                    print(f"⚠️ Update P&L tracker failed: {e}")
-
-            print(f"✅ Position settlement completed, Cash balance: ${self.cash:,.0f}")
-
-        else:
-            print(f"🏁 Backtest end, No positions to settle")
-            print(f"💰 Final cash balance: ${self.cash:,.0f}")
+    def finalize_backtest(self, final_price, final_timestamp):
+        """Settlement is idempotent and belongs to the execution ledger."""
+        if self.execution_controller is not None:
+            self.execution_controller.finish(self._execution_data)
+            self.execution_controller.sync(self)
 
     def get_final_portfolio_value(self, final_price: float) -> float:
         """
@@ -2729,141 +2480,14 @@ Position held: {"Position held" if self.current_position else "No position"}"""
         confidence = decision.get("confidence", 0.5)
         reasoning = decision.get("reasoning", "")
 
-        # Update position state
-        if hasattr(self, "pnl_tracker") and self.pnl_tracker:
-            try:
-                if action == "BUY" and not self.current_position:
-                    # Fixed 1000 shares
-                    shares_to_buy = 1000
-                    cost = shares_to_buy * price
-
-                    print(f"🎯 Fixed position size: Buy {shares_to_buy} shares")
-
-                    # Ensure sufficient cash
-                    if cost <= self.cash:
-                        # Add new position to P&L tracker
-                        if self.current_symbol:
-                            self.current_position_id = self.pnl_tracker.add_position(
-                                self.current_symbol,
-                                timestamp.strftime("%Y-%m-%d"),
-                                price,
-                                shares_to_buy,
-                                confidence,
-                            )
-
-                        # Update internal position state
-                        self.current_position = "long"
-                        self.position_entry_price = price
-                        self.position_entry_date = timestamp
-                        self.shares = shares_to_buy
-                        self.cash -= cost
-
-                        # Use fixed stop-loss percentage (5%)
-                        stop_loss_price = price * 0.95
-
-                        print(
-                            f"📈 Position updated: Buy {shares_to_buy} shares, Price ${price:.2f}, Total cost ${cost:,.0f}"
-                        )
-                        print(f"🛡️ Stop-loss setting: ${stop_loss_price:.2f} (5%Stop loss)")
-
-                        # Immediately send post-trade P&L Update
-                        if self.progress_callback:
-                            try:
-                                # Calculate current index (Assume this is called within the loop) 
-                                day_index = getattr(self, "_current_day_index", 0)
-                                total_days = getattr(self, "_total_days", 125)
-                                self._send_performance_update(
-                                    day_index, total_days, price
-                                )
-                            except Exception as e:
-                                print(f"⚠️ After buying P&L Update failed: {e}")
-                    else:
-                        print(
-                            f"⚠️ Insufficient cash, Unable to buy{shares_to_buy} shares (Requires ${cost:,.0f}, Available ${self.cash:,.0f})"
-                        )
-                        return None  # Do not generate a signal when funds are insufficient
-
-                elif action == "SELL" and self.current_position and self.shares > 0:
-                    # Sell all shares
-                    proceeds = self.shares * price
-
-                    # Calculate and record realized P&L
-                    cost_basis = self.shares * self.position_entry_price
-                    realized_pnl = proceeds - cost_basis
-                    realized_return = (
-                        (realized_pnl / cost_basis * 100) if cost_basis > 0 else 0
-                    )
-
-                    # Update cumulative realized P&L
-                    self.total_realized_pnl += realized_pnl
-                    self.trade_returns.append(realized_return)  # Record this trade’s return
-
-                    # Update trade statistics (One complete trade: Buy -> Sell)
-                    self.total_trades += 1
-                    is_winning_trade = realized_pnl > 0
-                    if is_winning_trade:
-                        self.winning_trades += 1
-
-                    # Calculate current win rate
-                    current_win_rate = (
-                        (self.winning_trades / self.total_trades * 100)
-                        if self.total_trades > 0
-                        else 0.0
-                    )
-
-                    # Reset position state
-                    self.current_position = None
-                    self.position_entry_price = 0.0
-                    self.position_entry_date = None
-                    old_shares = self.shares
-                    self.shares = 0
-                    self.cash += proceeds
-
-                    # Close P&L position in tracker
-                    if (
-                        hasattr(self, "pnl_tracker")
-                        and self.pnl_tracker
-                        and hasattr(self, "current_position_id")
-                        and self.current_position_id is not None
-                    ):
-                        try:
-                            self.pnl_tracker.close_position(
-                                self.current_position_id,
-                                price,
-                                timestamp.strftime("%Y-%m-%d"),
-                            )
-                            self.current_position_id = None  # Clear position ID
-                        except Exception as e:
-                            print(f"⚠️ P&L Failed to close position in tracker: {e}")
-
-                    print(f"📉 Position cleared: Sell {old_shares} shares, Price ${price:.2f}")
-                    print(f"💰 Sale proceeds: ${proceeds:,.2f}")
-                    print(f"🎯 Cost basis: ${cost_basis:,.2f}")
-                    print(
-                        f"📊 Realized P&L: ${realized_pnl:,.2f} ({realized_return:+.2f}%) ({'✅ Profit' if is_winning_trade else '❌ Loss'})"
-                    )
-                    print(f"💰 Cumulative realized P&L: ${self.total_realized_pnl:,.2f}")
-                    print(
-                        f"📊 Trading statistics: Day {self.total_trades} trades completed, Win rate {current_win_rate:.1f}% ({self.winning_trades}/{self.total_trades})"
-                    )
-                    print(f"💵 Current cash balance: ${self.cash:,.2f}")
-
-                    # Immediately send post-trade P&L Update
-                    if self.progress_callback:
-                        try:
-                            # Calculate current index (Assume this is called within the loop) 
-                            day_index = getattr(self, "_current_day_index", 0)
-                            total_days = getattr(self, "_total_days", 125)
-                            self._send_performance_update(day_index, total_days, price)
-                        except Exception as e:
-                            print(f"⚠️ After selling P&L Update failed: {e}")
-
-            except Exception as e:
-                print(f"⚠️ Position state update failed: {e}")
+        quantity = self.calculate_position_size(price) if action == "BUY" else self.shares
+        if quantity <= 0:
+            return None
 
         return TradingSignal(
             timestamp=timestamp,
             signal_type=signal_type,
+            quantity=quantity,
             confidence=confidence,
             price=price,
             reason=f"LLM Decision: {reasoning}",

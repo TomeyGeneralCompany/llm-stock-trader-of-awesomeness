@@ -43,6 +43,7 @@ class LLMClientConfig:
         default_factory=lambda: settings.OLLAMA_TIMEOUT_SECONDS
     )
     response_format: Optional[Literal["json"]] = None
+    response_schema: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if self.provider != "ollama":
@@ -57,6 +58,9 @@ class LLMClientConfig:
             raise ValueError("Ollama timeout must be zero or positive.")
         if self.response_format not in (None, "json"):
             raise ValueError("Ollama response format must be 'json' or None.")
+
+        if self.response_schema is not None and (not isinstance(self.response_schema, dict) or self.response_schema.get("type") != "object"):
+            raise ValueError("Response schema must describe a JSON object.")
 
     def create_client(self) -> "OllamaClient":
         """Create a client without making a network request or loading a model."""
@@ -91,7 +95,9 @@ class OllamaClient:
                 "num_thread": config.num_thread,
             },
         }
-        if config.response_format:
+        if config.response_schema is not None:
+            payload["format"] = config.response_schema
+        elif config.response_format:
             payload["format"] = config.response_format
 
         # Zero means no read deadline for slow CPU inference. Connection and
@@ -146,7 +152,7 @@ class OllamaClient:
             content = data["message"]["content"]
             if not isinstance(content, str) or not content.strip():
                 raise OllamaError("Ollama returned an empty answer.")
-            if config.response_format == "json":
+            if config.response_format == "json" or config.response_schema is not None:
                 json.loads(content)
         except (ValueError, KeyError, TypeError) as exc:
             raise OllamaError("Ollama returned an invalid response.") from exc

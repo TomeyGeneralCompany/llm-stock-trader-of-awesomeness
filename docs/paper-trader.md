@@ -42,3 +42,8 @@ systemctl --user stop paper-trader.service
 ```
 
 The writer is serialized, SQLite commits each state transition and event together, and it resumes from saved state after restart. The service retries data/analysis errors without inventing trades. The existing web dashboard also exposes read-only paper status, using the configured PAPER_DB_PATH. For detailed records, query the SQLite tables `bars`, `decisions`, `outcomes`, `events`, `sessions`, `state`, and `config`. The system uses paper-only accounting and does not include Robinhood integration.
+
+
+## Continuous intelligence
+
+The same service runs a separate intelligence archive/research controller outside market hours and after the urgent portfolio pass during regular sessions. It preserves this controller's session calendar, model validation, fills, cash rules, challenge objective and database schema. Configure INTELLIGENCE_DB_PATH independently; see [market-intelligence controls and provenance](market-intelligence.md). INTELLIGENCE_ENABLED=false explicitly disables acquisition/research integration without changing the trading account.

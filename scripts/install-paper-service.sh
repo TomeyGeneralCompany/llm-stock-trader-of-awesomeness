@@ -6,8 +6,9 @@ unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$unit_dir"
 cat > "$unit_dir/paper-trader.service" <<EOF
 [Unit]
-Description=Autonomous local paper trader
+Description=Autonomous paper trader and continuous market intelligence
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -22,3 +23,5 @@ WantedBy=default.target
 EOF
 systemctl --user daemon-reload
 systemctl --user enable --now paper-trader.service
+
+systemctl --user restart paper-trader.service
