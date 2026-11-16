@@ -216,7 +216,7 @@ def validate_accounting(output, analysis):
     settings = ExecutionSettings(**analysis["execution_settings"])
     if output["execution_settings"] != analysis["execution_settings"]:
         raise ValueError("Execution settings changed after analysis.")
-    cash, shares, basis = settings.initial_cash, 0, 0.
+    cash, shares, basis, entry_price = settings.initial_cash, 0, 0., 0.
     by_date = {}
     dates, prices = analysis["timestamps"], analysis["execution_prices"]
     def equal(actual, expected, label):
@@ -230,6 +230,8 @@ def validate_accounting(output, analysis):
             quantity, price = trade["shares"], trade["price"]
             if type(quantity) is not int or quantity <= 0:
                 raise ValueError("Executed shares must be a positive integer.")
+            if row["volume"] <= 0:
+                raise ValueError("Cannot execute against a zero-volume bar.")
             fee = max(settings.min_commission, quantity*price*settings.commission_rate)
             equal(trade["commission"], fee, "commission")
             decision = trade.get("decision_timestamp")
@@ -243,7 +245,25 @@ def validate_accounting(output, analysis):
                 equal(price, row["close"], "settlement price")
             elif trade["reason"] not in ("stop_loss", "stop_loss_gap", "take_profit", "take_profit_gap"):
                 raise ValueError("Execution lacks an authorized decision or protective trigger.")
+            if decision is None and trade["reason"] != "final_liquidation":
+                stop = entry_price*(1-settings.stop_loss) if settings.stop_loss else None
+                target = entry_price*(1+settings.take_profit) if settings.take_profit else None
+                reason, trigger = None, None
+                if shares and stop is not None and row["open"] <= stop:
+                    reason, trigger = "stop_loss_gap", row["open"]
+                elif shares and target is not None and row["open"] >= target:
+                    reason, trigger = "take_profit_gap", row["open"]
+                elif shares and stop is not None and row["low"] <= stop:
+                    reason, trigger = "stop_loss", stop
+                elif shares and target is not None and row["high"] >= target:
+                    reason, trigger = "take_profit", target
+                if trade["order_type"] != "sell" or trade["reason"] != reason or quantity != shares:
+                    raise ValueError("Protective execution lacks the configured price trigger.")
+                equal(price, trigger, "protective execution price")
             if trade["order_type"] == "buy":
+                if settings.max_shares_per_trade is not None and quantity > settings.max_shares_per_trade:
+                    raise ValueError("Executed buy exceeds the configured share cap.")
+                entry_price = (shares*entry_price + quantity*price)/(shares+quantity)
                 cash -= quantity*price + fee
                 shares += quantity
                 basis += quantity*price + fee
@@ -261,6 +281,8 @@ def validate_accounting(output, analysis):
                 cash += quantity*price-fee
                 shares -= quantity
                 basis -= allocated
+                if not shares:
+                    entry_price = 0.
             if cash < -1e-7:
                 raise ValueError("Execution overdrew cash.")
         equal(record["cash"], cash, "daily cash")

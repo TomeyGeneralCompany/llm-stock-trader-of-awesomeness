@@ -186,3 +186,18 @@ def test_zero_volume_is_not_a_fill():
     data["volume"]=0
     ledger=replay(data,[signal(data,0,"BUY",10)],settings(),"T")
     assert not ledger.trades and ledger.cash==1000
+
+
+
+def test_independent_review_rejects_invented_protective_trigger():
+    from app.backtesting.ledger import validate_accounting
+    data=prices([(10,10.5,9.5,10),(10,10.5,9.5,10),(10,12,9.5,11)])
+    config=settings(stop_loss=.1,take_profit=.1)
+    ledger=replay(data,[signal(data,0,"BUY",10)],config,"T")
+    analysis={"execution_settings":config.to_dict(),"timestamps":[d.isoformat() for d in data.index],
+              "execution_prices":data.to_dict("records")}
+    output={**ledger.artifact(),"execution_settings":config.to_dict()}
+    validate_accounting(output,analysis)
+    output["trades"][-1]["reason"]="stop_loss"
+    with pytest.raises(ValueError,match="price trigger"):
+        validate_accounting(output,analysis)
