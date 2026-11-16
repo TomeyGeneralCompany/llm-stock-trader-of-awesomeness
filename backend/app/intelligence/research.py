@@ -215,7 +215,7 @@ class CausalResearch:
                         fid = sha(ident + symbol)
                         target = stamp(datetime.fromisoformat(now)+timedelta(minutes=hypothesis["horizon_minutes"]))
                         db.execute("INSERT OR IGNORE INTO market_forecasts VALUES(?,?,?,?,?,?,?,?)",
-                                   (fid, ident, symbol, now, target, observations[-1]["close"], dump({**hypothesis, "company": symbol, "conditions": study["grouping"]}), "pending"))
+                                   (fid, ident, symbol, now, target, observations[-1]["close"], dump({**hypothesis, "company": symbol, "industry": catalog[symbol].get("industry") or "unknown", "conditions": study["grouping"]}), "pending"))
                 for finding in validated["findings"]:
                     for citation in finding["evidence"]:
                         version = db.execute("SELECT version FROM document_chunks WHERE id=?", (citation["chunk_id"],)).fetchone()[0]

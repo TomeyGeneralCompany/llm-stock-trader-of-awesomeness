@@ -134,7 +134,7 @@ class IntelligenceController:
             rows = db.execute("SELECT body FROM learned_lessons WHERE symbol=? AND available<=? ORDER BY available DESC LIMIT ?", (symbol, stamp(now), limit)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
-    def context(self, symbol, now, max_bytes=650):
+    def context(self, symbol, now, max_bytes=1200):
         now = stamp(now)
         with self.store.connect() as db:
             rows = db.execute("""SELECT id,body,available FROM market_forecasts
@@ -162,6 +162,10 @@ class IntelligenceController:
         for lesson in self.lessons(symbol, now):
             item = {"actual_return": lesson.get("actual_return"), "absolute_error": lesson.get("absolute_error"),
                     "direction_correct": lesson.get("direction_correct"), "error_classes": lesson.get("error_classes"), "kind": lesson.get("kind", "forecast"), "outcome": lesson.get("outcome")}
+            if lesson.get("causal_review"):
+                item["causal_review"] = lesson["causal_review"][0]["claim"][:96]
+                item["review_finding"] = lesson["review_finding"]
+                item["error_classes"] = lesson.get("reviewed_error_classes") or item["error_classes"]
             candidate = {**output, "lessons": output["lessons"]+[item]}
             if len(dump(candidate).encode()) <= max_bytes:
                 output = candidate
@@ -203,7 +207,7 @@ class IntelligenceController:
             metadata = self.store.catalog(now)
         for row in rows:
             forecast, outcome = json.loads(row["forecast"]), json.loads(row["outcome"])
-            labels = {"company": row["symbol"], "industry": metadata.get(row["symbol"], {}).get("industry") or "unknown",
+            labels = {"company": row["symbol"], "industry": forecast.get("industry") or metadata.get(row["symbol"], {}).get("industry") or "unknown",
                       "event_type": forecast["classification"], "horizon_minutes": str(forecast["horizon_minutes"]),
                       "conditions": forecast.get("conditions", "unknown")}
             for kind, label in labels.items():

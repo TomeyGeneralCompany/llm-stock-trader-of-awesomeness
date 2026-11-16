@@ -405,3 +405,20 @@ def test_public_feed_accepts_standard_xml_media_types(monkeypatch):
         return httpx.Response(200,content=b"<rss/>")
     monkeypatch.setattr(httpx,"Client",lambda **kwargs:original(transport=httpx.MockTransport(serve),**kwargs))
     assert sources.PublicFetcher("fixture")("https://example.org/feed",{"example.org"})==b"<rss/>"
+
+
+
+def test_reviewed_cause_reaches_future_context_and_industry_groups_stay_contemporaneous(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    intel.store.observe("AAA","5m",WHEN,dict(open=100,high=100,low=100,close=100,volume=100),WHEN)
+    intel.research.step(WHEN)
+    later=WHEN+timedelta(minutes=6)
+    intel.store.observe("AAA","5m",later,dict(open=97,high=97,low=97,close=97,volume=100),later)
+    intel.store.security("AAA",{"industry":"Later reclassification"},later)
+    intel.evaluate(later)
+    intel.research.step(later)
+    context=intel.context("AAA",later)
+    assert any(lesson.get("causal_review")=="AAA has a direct input relationship with BBB." for lesson in context["lessons"])
+    groups=[group for group in intel.overview(later)["accuracy"] if group["group"]=="industry"]
+    assert groups[0]["label"]=="Manufacturing"
