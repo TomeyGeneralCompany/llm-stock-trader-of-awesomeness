@@ -1,6 +1,7 @@
 """Deterministic finite-cash ledger shared by analysis and verification replay."""
 
 import math
+from datetime import datetime
 from dataclasses import asdict, dataclass
 
 
@@ -125,12 +126,12 @@ class ExecutionLedger:
                 if order.get("quantity") is not None and order["quantity"] > 0:
                     quantity = min(quantity, int(order["quantity"]))
                 filled = self._fill(action, quantity, opening, date, order.get("reason", ""),
-                                    order["timestamp"], confidence=order.get("confidence", 0)) if action in ("buy", "sell") else False
+                                    order["timestamp"], confidence=order.get("confidence", 0)) if action in ("buy", "sell") and float(row["volume"]) > 0 else False
                 self.orders.append({"decision_timestamp": order["timestamp"],
                     "execution_timestamp": date if filled else None, "action": action,
                     "status": "filled" if filled else "rejected",
                     "reason": "next_open" if filled else "No affordable allocation or eligible holdings."})
-            if self.shares:
+            if self.shares and float(row["volume"]) > 0:
                 stop = self.entry_price * (1 - self.settings.stop_loss) if self.settings.stop_loss else None
                 target = self.entry_price * (1 + self.settings.take_profit) if self.settings.take_profit else None
                 price, reason = None, None
@@ -161,7 +162,7 @@ class ExecutionLedger:
                 "execution_timestamp": None, "action": order["signal_type"].lower(),
                 "status": "cancelled", "reason": "No next bar is available."})
         self.pending = []
-        if self.shares and self.settings.liquidate_at_end:
+        if self.shares and self.settings.liquidate_at_end and float(data.iloc[-1]["volume"]) > 0:
             date, close = data.index[-1].isoformat(), float(data.iloc[-1]["close"])
             self._fill("sell", self.shares, close, date, "final_liquidation", phase="close")
             value = self.cash + self.shares * close
@@ -182,6 +183,8 @@ class ExecutionLedger:
 
     def sync(self, strategy):
         for key, value in self.state().items():
+            if key == "position_entry_date" and value is not None:
+                value = datetime.fromisoformat(value)
             setattr(strategy, key, value.copy() if isinstance(value, list) else value)
         if self.history:
             strategy.current_portfolio_value = self.history[-1]["total_value"]
@@ -205,3 +208,65 @@ def replay(data, signals, settings, symbol):
             ledger.submit(signal)
     ledger.finish(data)
     return ledger
+
+
+
+def validate_accounting(output, analysis):
+    """Independent arithmetic/timing check, not a second invocation of the fill kernel."""
+    settings = ExecutionSettings(**analysis["execution_settings"])
+    if output["execution_settings"] != analysis["execution_settings"]:
+        raise ValueError("Execution settings changed after analysis.")
+    cash, shares, basis = settings.initial_cash, 0, 0.
+    by_date = {}
+    dates, prices = analysis["timestamps"], analysis["execution_prices"]
+    def equal(actual, expected, label):
+        if not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-7):
+            raise ValueError("Ledger does not reconcile: "+label)
+    for trade in output["trades"]:
+        by_date.setdefault(trade["timestamp"], []).append(trade)
+    for index, record in enumerate(output["portfolio_history"]):
+        row = prices[index]
+        for trade in by_date.get(record["date"], []):
+            quantity, price = trade["shares"], trade["price"]
+            if type(quantity) is not int or quantity <= 0:
+                raise ValueError("Executed shares must be a positive integer.")
+            fee = max(settings.min_commission, quantity*price*settings.commission_rate)
+            equal(trade["commission"], fee, "commission")
+            decision = trade.get("decision_timestamp")
+            if decision is not None:
+                if index == 0 or decision != dates[index-1] or trade["execution_phase"] != "open":
+                    raise ValueError("A decision must execute at the next observed open.")
+                equal(price, row["open"], "opening execution price")
+            elif trade["reason"] == "final_liquidation":
+                if index != len(dates)-1 or trade["execution_phase"] != "close":
+                    raise ValueError("Final settlement must occur at the last close.")
+                equal(price, row["close"], "settlement price")
+            elif trade["reason"] not in ("stop_loss", "stop_loss_gap", "take_profit", "take_profit_gap"):
+                raise ValueError("Execution lacks an authorized decision or protective trigger.")
+            if trade["order_type"] == "buy":
+                cash -= quantity*price + fee
+                shares += quantity
+                basis += quantity*price + fee
+                equal(trade["total_cost"], quantity*price+fee, "buy cost")
+                if shares*price > settings.max_position_size*(cash+shares*price)+1e-7:
+                    raise ValueError("Entry exceeds the configured allocation cap.")
+            else:
+                if quantity > shares:
+                    raise ValueError("Sell exceeds owned shares.")
+                allocated = basis*quantity/shares
+                pnl = quantity*price-fee-allocated
+                equal(trade["cost_basis"], allocated, "allocated entry cost")
+                equal(trade["realized_pnl"], pnl, "net realized profit")
+                equal(trade["total_cost"], quantity*price-fee, "net sale proceeds")
+                cash += quantity*price-fee
+                shares -= quantity
+                basis -= allocated
+            if cash < -1e-7:
+                raise ValueError("Execution overdrew cash.")
+        equal(record["cash"], cash, "daily cash")
+        equal(record["position"], shares, "daily holdings")
+        equal(record["stock_value"], shares*row["close"], "marked stock value")
+        equal(record["total_value"], cash+shares*row["close"], "equity")
+        equal(record["cumulative_return"], (cash+shares*row["close"])/settings.initial_cash-1, "return")
+    equal(output["strategy_state"]["cash"], cash, "final state cash")
+    equal(output["strategy_state"]["shares"], shares, "final state holdings")

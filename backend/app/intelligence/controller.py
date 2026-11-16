@@ -19,6 +19,13 @@ class IntelligenceController:
         self.lock = FileLock(str(path)+".writer.lock", timeout=0)
         self.acquisition = SourceAcquisition(self.store, config, fetch)
         self.research = CausalResearch(self.store, client)
+        try:
+            with self.lock, self.store.connect() as db:
+                # The writer lock proves no previous cycle is still active.
+                db.execute("UPDATE acquisition_jobs SET status='queued',lease=NULL WHERE status='running'")
+                db.execute("UPDATE research_tasks SET status='queued',lease=NULL WHERE status='running'")
+        except Timeout:
+            pass
 
     def observe(self, bars, now):
         """Paper observations are archived, never turned into orders by research."""

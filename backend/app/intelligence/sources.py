@@ -90,9 +90,9 @@ def parse_feed(payload, url, now):
         body = text_of(values.get("content") or values.get("description") or values.get("summary") or title)
         date = values.get("published") or values.get("pubDate") or values.get("updated")
         try:
-            published = stamp(date) if date and re.match(r"\d{4}-", date) else stamp(parsedate_to_datetime(date)) if date else stamp(now)
+            published = stamp(date) if date and re.match(r"\d{4}-", date) else stamp(parsedate_to_datetime(date)) if date else None
         except (ValueError, TypeError):
-            published = stamp(now)
+            published = None
         if title and link:
             results.append({"url": urljoin(url, link.strip()), "title": title, "text": title + "\n" + body,
                             "published": published, "language": values.get("language", "und")})
@@ -111,7 +111,7 @@ class SourceAcquisition:
         now = "1970-01-01T00:00:00+00:00"
         configured = list(DEFAULT_SOURCES)
         for index, source in enumerate(json.loads(self.config.INTELLIGENCE_FEEDS)):
-            configured.append((source.get("id", f"rss_{index}"), source["url"], int(source.get("interval", 300)), "feed"))
+            configured.append((source.get("id", f"rss_{index}"), source["url"], int(source.get("interval", 900 if source.get("type")=="corporate_ir" else 300)), "feed"))
         if self.config.FRED_API_KEY:
             configured += [("fred", "https://api.stlouisfed.org/fred/releases/dates", 900, "fred"),
                            ("alfred", "https://api.stlouisfed.org/fred/series/vintagedates", 900, "alfred")]
@@ -193,8 +193,8 @@ class SourceAcquisition:
 
     def acquire(self, job, now):
         payload = json.loads(job["payload"])
-        if job["kind"] in ("market", "metadata"):
-            return self.market(payload["symbol"], job["kind"], now)
+        if job["kind"] in ("market", "metadata", "history"):
+            return self.market(payload["symbol"], job["kind"], now, payload)
         url = payload["url"]
         domains = {urlsplit(url).hostname}
         if job["source"] == "sec" and not self.config.SEC_USER_AGENT:
@@ -236,7 +236,7 @@ class SourceAcquisition:
                 self.store.enqueue("yahoo", "market", {"symbol": symbol}, now)
             return
         if job["kind"] == "gdelt":
-            items = [{"url": item["url"], "title": item.get("title", ""), "text": item.get("title", ""), "published": now, "language": item.get("language", "und")} for item in json.loads(raw).get("articles", [])]
+            items = [{"url": item["url"], "title": item.get("title", ""), "text": item.get("title", ""), "published": None, "language": item.get("language", "und")} for item in json.loads(raw).get("articles", [])]
         elif job["kind"] in ("fred", "alfred"):
             # Preserve release/vintage metadata as dated evidence; no fabricated economic values.
             items = [{"url": payload["url"], "title": job["kind"] + " release/vintage metadata", "text": raw.decode(), "published": now, "language": "en"}]
@@ -250,7 +250,7 @@ class SourceAcquisition:
             if job["kind"] in ("feed", "gdelt") and urlsplit(item["url"]).scheme == "https":
                 self.store.enqueue(job["source"], "article", {"url": canonical(item["url"]), "published": item["published"], "title": item["title"], "summary_hash": __import__("hashlib").sha256(item["text"].encode()).hexdigest()}, now)
 
-    def market(self, symbol, kind, now):
+    def market(self, symbol, kind, now, payload=None):
         import yfinance as yf
         ticker = yf.Ticker(symbol)
         if kind == "metadata":
@@ -263,14 +263,39 @@ class SourceAcquisition:
                 db.execute("INSERT OR REPLACE INTO coverage VALUES(?,?,'success',NULL,NULL,?,NULL)", (symbol, "metadata", stamp(now)))
             return
         successes = 0
-        for interval, period in (("5m", "5d"), ("1d", "1y")):
-            frame = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=False, timeout=20)
+        spans = (("1d", None),) if kind=="history" else (("5m", "5d"), ("1d", "1y"))
+        for interval, period in spans:
+            if kind=="history":
+                ending = datetime.fromisoformat(payload["end"]).date()
+                beginning = ending-timedelta(days=365)
+                frame = ticker.history(start=beginning.isoformat(), end=ending.isoformat(), interval=interval, prepost=True, auto_adjust=False, timeout=20)
+            else:
+                frame = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=False, timeout=20)
             if frame.empty:
+                if kind=="history":
+                    with self.store.connect() as db:
+                        db.execute("INSERT INTO coverage VALUES(?,?,'source_exhausted',NULL,NULL,?,?) ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,last_success=excluded.last_success,error=excluded.error",
+                                   (symbol, "history", stamp(now), "Provider returned no older historical observations."))
+                    return
                 with self.store.connect() as db:
                     db.execute("INSERT INTO coverage VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,error=excluded.error", (symbol, interval, "provider_unavailable", None, None, None, "No observations returned."))
+                if kind=="history":
+                    return  # Recorded source exhaustion, not manufactured earlier observations.
                 continue
+            if interval=="1d":
+                oldest = stamp(frame.index[0].to_pydatetime())
+                with self.store.connect() as db:
+                    existing = db.execute("SELECT 1 FROM acquisition_jobs WHERE kind='history' AND json_extract(payload,'$.symbol')=? LIMIT 1", (symbol,)).fetchone()
+                if kind=="history" or not existing:
+                    self.store.enqueue("yahoo", "history", {"symbol": symbol, "end": oldest}, now)
             for date, row in frame.iterrows():
-                end = date.to_pydatetime() + (timedelta(minutes=5) if interval == "5m" else timedelta(days=1))
+                from app.paper_market import EASTERN, market_close
+                if interval=="5m":
+                    end = date.to_pydatetime()+timedelta(minutes=5)
+                else:
+                    local_date = date.to_pydatetime().astimezone(EASTERN)
+                    close_time = market_close(local_date.date())
+                    end = local_date.replace(hour=close_time[0],minute=close_time[1],second=0,microsecond=0) if close_time else date.to_pydatetime()+timedelta(days=1)
                 if stamp(end) > stamp(now):
                     continue
                 from app.paper_market import EASTERN, market_close

@@ -148,3 +148,41 @@ def test_current_recommendation_does_not_mutate_positions():
     result = strategy._create_signal_from_decision(decision, pd.Timestamp("2025-01-01"), 10)
     assert result is not None and 0 < result.quantity < 100
     assert (strategy.cash, strategy.shares, strategy.current_position) == before
+
+
+
+def test_qwen_next_decision_observes_only_executed_positions_and_net_cash(monkeypatch):
+    import httpx
+    import json
+    from decision_fixtures import explained
+    data = prices([(100,101,99,100)]*36)
+    strategy = LLMSmartStrategy(StrategyConfig(name="chronological",description="test",parameters={"enable_logging":False}))
+    trend = SimpleNamespace(dominant_trend="uptrend",complexity_score=.2,trend_consistency=1.)
+    enhanced = SimpleNamespace(original_result=trend,market_phase="uptrend",reversal_probability=.1,trend_consistency=1.,momentum_status="bullish",risk_level="low")
+    monkeypatch.setattr(strategy.trend_analyzer, "analyze_with_llm_optimization", lambda *a: enhanced)
+    monkeypatch.setattr(strategy, "_detect_trigger_events", lambda *a: [{"event_type":"LARGE_DROP","severity":"high","description":"Deterministic review event."}])
+    contexts = {}
+    original = httpx.Client
+    def respond(request):
+        body=json.loads(request.content)
+        prompt=body["messages"][0]["content"]
+        context=json.loads(prompt.split("Controller working state (authoritative):\n",1)[1].split("\n\nOwner question:",1)[0])
+        contexts[context["asof"]]=context
+        action="BUY" if context["asof"]==data.index[30].isoformat() else "SELL" if context["asof"]==data.index[32].isoformat() else "HOLD"
+        decision=explained({"action":action,"confidence":.9,"risk_level":"medium","reasoning":"The current observations support this action.","expected_outcome":"Reassess on the next completed observation."},prompt)
+        return httpx.Response(200,json={"done":True,"message":{"content":json.dumps(decision)}})
+    monkeypatch.setattr(httpx,"Client",lambda **kwargs:original(transport=httpx.MockTransport(respond),**kwargs))
+    result=BacktestEngine().run_backtest(data,strategy,initial_cash=1000,transaction_cost=.001,max_position_size=.3,stop_loss=0,take_profit=0,symbol="T")
+    assert contexts[data.index[30].isoformat()]["shares"]==0
+    assert contexts[data.index[31].isoformat()]["shares"]==2
+    assert contexts[data.index[31].isoformat()]["cash"]==pytest.approx(799.8)
+    assert contexts[data.index[33].isoformat()]["shares"]==0
+    assert contexts[data.index[33].isoformat()]["cash"]==pytest.approx(999.6)
+    assert result["performance_metrics"]["final_value"]==pytest.approx(999.6)
+
+
+def test_zero_volume_is_not_a_fill():
+    data=prices([(10,10,10,10),(10,10,10,10)])
+    data["volume"]=0
+    ledger=replay(data,[signal(data,0,"BUY",10)],settings(),"T")
+    assert not ledger.trades and ledger.cash==1000

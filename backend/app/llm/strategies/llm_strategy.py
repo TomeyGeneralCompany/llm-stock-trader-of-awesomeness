@@ -1073,10 +1073,9 @@ class LLMSmartStrategy(TradingStrategy):
 
         # Calculate unrealized P&L
         position_value = self.shares * current_price
-        unrealized_pnl = position_value - (self.shares * self.position_entry_price)
-        unrealized_pnl_pct = (
-            unrealized_pnl / (self.shares * self.position_entry_price) * 100
-        )
+        basis = self.execution_controller.cost_basis if self.execution_controller is not None else self.shares * self.position_entry_price
+        unrealized_pnl = position_value - basis
+        unrealized_pnl_pct = unrealized_pnl / basis * 100 if basis > 0 else 0.0
 
         # Calculate holding days
         if self.position_entry_date and current_date:
@@ -1109,7 +1108,7 @@ class LLMSmartStrategy(TradingStrategy):
             "unrealized_pnl_pct": unrealized_pnl_pct,
             "holding_days": holding_days,
             "risk_level": risk_level,
-            "cost_basis": self.shares * self.position_entry_price,
+            "cost_basis": basis,
         }
 
     def _calculate_current_performance(self, current_price: float) -> Dict[str, float]:

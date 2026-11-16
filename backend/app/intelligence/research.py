@@ -26,6 +26,7 @@ consider what is already incorporated in price. Temporal proximity does not prov
 An affected company benefiting does not guarantee a profitable trade.
 A sufficient investigation needs supported findings. If unresolved, request structured follow-up;
 if available sources are exhausted, state that status and preserve unanswered questions.
+When reviewing a discrepancy, include error_classes from acquisition, interpretation, relationship, directional, magnitude, timing, allocation, execution, opportunity, supported by cited findings.
 Keep the response concise. You have no terminal, shell, filesystem-write or order-execution authority.
 """
 
@@ -85,13 +86,24 @@ class CausalResearch:
             event = db.execute("SELECT * FROM events WHERE id=?", (task["event"],)).fetchone()
             symbols = list(self.store.catalog(now))[:30]
             prior = [json.loads(r[0]) for r in db.execute("SELECT body FROM research_findings WHERE task=? AND available<=? ORDER BY available DESC LIMIT 2", (task["id"], now))]
+        catalog = self.store.catalog(now)
         chunks = self.store.retrieve((event["title"] if event else "") + " " + task["question"], now, limit=8)
         if not chunks:
             with self.store.connect() as db:
                 db.execute("UPDATE research_tasks SET status='waiting_evidence',updated=?,lease=NULL,error='No available evidence' WHERE id=?", (now, task["id"]))
             return None
-        budget = prompt_budget(self.client.config.num_ctx, self.client.config.max_tokens) - 400
+        document_text = " ".join(chunk["body"] for chunk in chunks).lower()
+        relevant = [symbol for symbol, metadata in catalog.items() if symbol.lower() in document_text or metadata.get("company", symbol).lower() in document_text]
+        symbols = list(dict.fromkeys(relevant + symbols))[:30]
+        budget = prompt_budget(self.client.config.num_ctx, self.client.config.max_tokens) - 900
         header = INSTRUCTIONS + "\nQuestion: " + task["question"] + "\nRegistered symbols: " + ",".join(symbols)
+        with self.store.connect() as db:
+            graph = [json.loads(row[0]) for row in db.execute("SELECT evidence FROM entity_relationships WHERE available<=? ORDER BY available DESC LIMIT 8", (now,))]
+        for relation in graph:
+            if relation["subject"].lower() in document_text or relation["object"].lower() in document_text:
+                line = "\nPrior supported relationship: " + dump(relation)
+                if len((header+line).encode()) < budget-1800:
+                    header += line
         prompt, aliases = header, {}
         for chunk in chunks:
             alias = "E" + str(len(aliases)+1)
@@ -109,6 +121,9 @@ class CausalResearch:
         line = "\nController-calculated event study: " + dump(study["aggregate"])
         if len((prompt+line).encode()) <= budget:
             prompt += line
+        prompt += ("\nNow return only the research JSON object. Required root keys: status, findings (array), "
+                   "relationships (array), hypotheses (array), followups (array). "
+                   "Include exact cited quotations in findings; do not return input metadata or the statistics object.\n")
         try:
             if not aliases:
                 raise ValueError("Research instructions leave no room for evidence.")
@@ -122,6 +137,11 @@ class CausalResearch:
                         db.execute("UPDATE research_runs SET response=? WHERE id=?", (raw, run_id))
                     try:
                         result = json.loads(raw)
+                        # Singleton objects still undergo every citation and field check.
+                        if isinstance(result, dict):
+                            for collection in ("findings", "relationships", "hypotheses", "followups"):
+                                if isinstance(result.get(collection), dict):
+                                    result[collection] = [result[collection]]
                         validated = self.validate(result, aliases, now)
                         with self.store.connect() as db:
                             db.execute("UPDATE research_runs SET status='accepted' WHERE id=?", (run_id,))
@@ -129,9 +149,11 @@ class CausalResearch:
                     except (ValueError, KeyError, TypeError) as exc:
                         with self.store.connect() as db:
                             db.execute("UPDATE research_runs SET status='rejected',error=? WHERE id=?", (str(exc)[:500], run_id))
+                        import logging
+                        logging.getLogger(__name__).warning("Research schema correction: %s; response=%s", str(exc), raw[:3000])
                         if attempt:
                             raise
-                        prompt += "\nCorrection: " + str(exc)[:250] + ". Return grounded complete JSON."
+                        prompt += "\nCorrection: " + str(exc)[:200] + ". Return all five root keys; findings/relationships/hypotheses/followups are arrays, with cited evidence."
             finding_id = sha(task["id"] + now + raw)
             with self.store.connect() as db:
                 db.execute("INSERT OR IGNORE INTO research_findings VALUES(?,?,?,?,?)", (finding_id, task["id"], now, dump(validated), raw))
@@ -165,10 +187,24 @@ class CausalResearch:
                 db.execute("UPDATE research_tasks SET status=?,updated=?,lease=NULL,steps=steps+1,dependencies=?,error=NULL WHERE id=?",
                            (status, now, dump(validated["followups"]), task["id"]))
                 for follow in validated["followups"]:
+                    follow_id = sha(task["event"] + ":" + follow["question"])
+                    db.execute("INSERT OR IGNORE INTO research_tasks VALUES(?,?,?,?,?,?,?,?,?,?)",
+                               (follow_id, task["event"], follow["question"]+" Search terms: "+follow["terms"],
+                                "queued", task["priority"]+1, now, None, 0, dump({"parent": task["id"]}), None))
                     for source in follow["sources"]:
                         row = db.execute("SELECT body FROM sources WHERE id=?", (source,)).fetchone()
                         body = json.loads(row[0])
                         db.execute("INSERT OR IGNORE INTO acquisition_jobs(source,kind,payload,status,due) VALUES(?,?,?,'queued',?)", (source, body["kind"], dump({"url": body["url"], "query": follow["terms"], "task": task["id"], "scheduled": now}), now))
+                if task["question"].startswith("Investigate forecast discrepancy "):
+                    import re
+                    identifiers = re.findall(r"[0-9a-f]{64}", task["question"])
+                    if identifiers:
+                        prior_lesson = db.execute("SELECT symbol,body FROM learned_lessons WHERE id=?", (sha("outcome:"+identifiers[0]),)).fetchone()
+                        if prior_lesson:
+                            lesson = {**json.loads(prior_lesson["body"]), "causal_review": validated["findings"],
+                                      "reviewed_error_classes": validated.get("error_classes", []), "review_finding": finding_id}
+                            db.execute("INSERT OR IGNORE INTO learned_lessons VALUES(?,?,?,?)",
+                                       (sha("review:"+finding_id), prior_lesson["symbol"], now, dump(lesson)))
             self.store.log("RESEARCH", {"task": task["id"], "status": status, "finding": finding_id}, now)
             return validated
         except Exception as exc:
@@ -187,6 +223,8 @@ class CausalResearch:
             raise ValueError("Sufficient research requires supported findings.")
         if result["status"] == "continue" and not result["followups"]:
             raise ValueError("Unfinished research requires structured follow-up questions.")
+        if not isinstance(result.get("error_classes", []), list) or set(result.get("error_classes", [])) - {"acquisition", "interpretation", "relationship", "directional", "magnitude", "timing", "allocation", "execution", "opportunity"}:
+            raise ValueError("Unknown discrepancy classification.")
         with self.store.connect() as db:
             catalog = self.store.catalog(now)
             symbols = set(catalog)

@@ -241,3 +241,26 @@ def test_intelligence_endpoints_are_read_only_and_asof_scoped(tmp_path, monkeypa
     assert error.value.status_code == 404
     assert api.evidence(chunk["id"], stamp(WHEN))["body"] == chunk["body"]
     assert api.original(version, stamp(WHEN))["original_text"] == TEXT
+
+
+
+def test_restart_requeues_interrupted_work_without_erasing_evidence(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    with intel.store.connect() as db:
+        db.execute("UPDATE research_tasks SET status='running',lease=?", (stamp(WHEN+timedelta(days=1)),))
+        db.execute("UPDATE acquisition_jobs SET status='running',lease=?", (stamp(WHEN+timedelta(days=1)),))
+    restored=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    with restored.store.connect() as db:
+        assert db.execute("SELECT status FROM research_tasks LIMIT 1").fetchone()[0]=="queued"
+        assert db.execute("SELECT COUNT(*) FROM document_versions").fetchone()[0]>0
+
+
+def test_missing_publication_date_remains_unknown(tmp_path):
+    rows=parse_feed(b"<rss><channel><item><title>AAA news</title><link>https://example.org/a</link><description>AAA event</description></item></channel></rss>","https://example.org/feed",WHEN)
+    assert rows[0]["published"] is None
+    store=IntelligenceStore(tmp_path/"archive.db")
+    store.archive(**rows[0],publisher="example.org",acquired=WHEN)
+    with store.connect() as db:
+        row=db.execute("SELECT published,available FROM document_versions").fetchone()
+        assert row["published"] is None and row["available"]==stamp(WHEN)

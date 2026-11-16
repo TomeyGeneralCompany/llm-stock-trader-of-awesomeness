@@ -189,6 +189,21 @@ def validate_output(stage: Stage, output: dict, previous: Optional[dict]) -> dic
                 validate_decision(decision, context=context)
             except DecisionError as exc:
                 raise GateError(str(exc)) from exc
+        if "execution_settings" in output:
+            expected = [{key: row[key] for key in ("open", "high", "low", "close", "volume")} for row in source]
+            if output.get("execution_prices") != expected:
+                raise GateError("Execution prices changed from prepared evidence.")
+            ledger = output.get("decision_ledger")
+            if ledger is not None:
+                marks = {row["date"]: row for row in ledger["portfolio_history"]}
+                if ledger.get("pre_settlement"):
+                    marks[ledger["pre_settlement"]["date"]] = ledger["pre_settlement"]
+                for log in output["decisions"]:
+                    context = log.get("context")
+                    if context is not None:
+                        mark = marks[log["date"]]
+                        if not math.isclose(context["cash"], mark["cash"], abs_tol=1e-7) or context["shares"] != mark["position"]:
+                            raise GateError("A decision did not observe the execution ledger's actual portfolio.")
         for key, value in output.get("strategy_state", {}).items():
             if key in (
                 "cash",
@@ -234,6 +249,12 @@ def validate_output(stage: Stage, output: dict, previous: Optional[dict]) -> dic
                 raise GateError(
                     "Simulation reported an unexecuted or unsupported trade."
                 )
+        if "execution_settings" in previous:
+            from app.backtesting.ledger import validate_accounting
+            try:
+                validate_accounting(output, previous)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise GateError(str(exc)) from exc
         return {
             "observations": len(history),
             "executed_trades": len(output["trades"]),

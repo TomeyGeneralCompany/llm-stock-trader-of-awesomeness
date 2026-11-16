@@ -47,6 +47,14 @@ jobs:
         run: |
           mkdir -p intelligence-probe
           if [ -f "$RUNNER_TEMP/ollama.log" ]; then cp "$RUNNER_TEMP/ollama.log" intelligence-probe/ollama.log; fi
+          if [ -f intelligence-probe/fixture.sqlite3 ]; then
+            python - <<'PY'
+          import sqlite3
+          db=sqlite3.connect('intelligence-probe/fixture.sqlite3')
+          for row in db.execute("SELECT status,error,response FROM research_runs"):
+              print(row)
+          PY
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

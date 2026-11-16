@@ -149,8 +149,9 @@ class IntelligenceStore:
                 language="und", payload=None, chunk_chars=768, overlap=96):
         if chunk_chars <= overlap or overlap < 0:
             raise ValueError("Chunk size must exceed overlap.")
-        url, published, acquired = canonical(url), stamp(published), stamp(acquired)
-        available = max(published, acquired)
+        url, acquired = canonical(url), stamp(acquired)
+        published = stamp(published) if published else None
+        available = max(published or acquired, acquired)
         doc, content_hash = sha(url), sha(text)
         version = sha(doc + content_hash)
         normalized = re.sub(r"\W+", " ", title.lower()).strip()
@@ -172,7 +173,7 @@ class IntelligenceStore:
             db.execute("INSERT OR IGNORE INTO documents VALUES(?,?,?,?,?)", (doc, url, publisher, title, event))
             db.execute("INSERT INTO document_versions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                        (version, doc, published, acquired, acquired if prior else None, available,
-                        stamp(event_time) if event_time else published, content_hash, text,
+                        stamp(event_time) if event_time else published or acquired, content_hash, text,
                         ("source_payload:"+payload_id).encode(), language))
             db.execute("INSERT INTO event_evidence VALUES(?,?,?)", (event, version, "unassessed"))
             for ordinal, start in enumerate(range(0, len(text), chunk_chars - overlap)):

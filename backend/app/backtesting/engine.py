@@ -423,6 +423,8 @@ class CustomBacktestEngine:
                 strategy.memory = DecisionMemory(gates.run_id, gates.store.path + ".memory.sqlite3")
                 strategy.memory.archive_file(Path(__file__).parents[1] / "llm/strategies/prompt/traditional_strategy.md")
             if hasattr(strategy, "execution_controller"):
+                strategy.decision_log = []
+                strategy.max_drawdown = 0.0
                 strategy.execution_controller = ledger
                 strategy.position_size = execution.max_position_size
                 strategy.max_loss_threshold = execution.stop_loss
@@ -441,7 +443,7 @@ class CustomBacktestEngine:
                     "strategy_state": ledger.state(),
                     "execution_settings": execution.to_dict(),
                     "decision_ledger": ledger.artifact() if ledger.finished else None,
-                    "valuation_prices": [float(value) for value in enhanced_data["close"]],
+                    "execution_prices": [{key: float(row[key]) for key in ("open", "high", "low", "close", "volume")} for _, row in enhanced_data.iterrows()],
 
                 },
             )
