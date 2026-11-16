@@ -9,6 +9,7 @@ from app.backtesting.gates import GateError, Stage, validate_output
 from app.llm.decisions import (
     DecisionError,
     format_decision_reasoning,
+    execution_action,
     validate_decision,
 )
 from decision_fixtures import explained
@@ -95,6 +96,8 @@ def test_current_sell_is_rejected_when_flat_but_allowed_when_long(case):
     with pytest.raises(DecisionError, match="Current SELL"):
         validate_decision(decision, context)
     context["shares"] = 10
+    decision["explanation"]["execution"]["mode"] = "now"
+    decision["reasoning"] = "Exit the existing position based on present evidence."
     decision["explanation"]["observed_state"]["position"] = "long"
     assert validate_decision(decision, context)
 
@@ -213,3 +216,49 @@ def test_github_summary_displays_reasoning_sections_and_escapes_text(case, tmp_p
     assert "&lt;script&gt;future scenario&lt;/script&gt;" in summary
     assert "<script>" not in summary
     assert json.loads((tmp_path / "response.json").read_text())["decision"] == decision
+
+
+def test_future_entry_cannot_be_executed_now(case):
+    decision, context = case
+    decision["action"] = "BUY"
+    assert execution_action(decision) == "HOLD"
+    with pytest.raises(DecisionError, match="execution mode"):
+        validate_decision(decision, context)
+    decision["explanation"]["execution"]["mode"] = "now"
+    decision["explanation"]["execution"]["rationale"] = "Only buy if resistance breaks."
+    with pytest.raises(DecisionError, match="unmet trigger"):
+        validate_decision(decision, context)
+
+
+def test_immediate_entry_is_permitted(case):
+    decision, context = case
+    decision["action"] = "BUY"
+    decision["reasoning"] = "Enter now at the observed close."
+    decision["explanation"]["execution"]["mode"] = "now"
+    assert validate_decision(decision, context) == decision
+    assert execution_action(decision) == "BUY"
+
+
+def test_macd_alignment_is_not_a_cross(case):
+    decision, context = case
+    context["macd_alignment"] = "above"
+    decision["explanation"]["observed_state"]["macd_alignment"] = "above"
+    decision["reasoning"] = "MACD crossed above the signal line."
+    with pytest.raises(DecisionError, match="No new MACD crossover"):
+        validate_decision(decision, context)
+    decision["reasoning"] = "MACD is above the signal line; no new crossover."
+    assert validate_decision(decision, context)
+
+
+def test_risk_must_cite_available_evidence(case):
+    decision, context = case
+    decision["explanation"]["risk_assessment"]["evidence"] = ["technical_facts.missing"]
+    with pytest.raises(DecisionError, match="unavailable controller evidence"):
+        validate_decision(decision, context)
+
+
+def test_risk_cannot_claim_guaranteed_profit(case):
+    decision, context = case
+    decision["explanation"]["risk_assessment"]["rationale"] = "Guaranteed profit."
+    with pytest.raises(DecisionError, match="guaranteed safety"):
+        validate_decision(decision, context)

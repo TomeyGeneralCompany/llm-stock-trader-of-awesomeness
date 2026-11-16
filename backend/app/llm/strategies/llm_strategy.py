@@ -24,6 +24,7 @@ from ..decisions import (
     DecisionError,
     format_decision_reasoning,
     validate_decision,
+    execution_action,
 )
 from ..memory import DecisionMemory, digest, prompt_budget
 from ...backtesting.gates import json_value
@@ -791,7 +792,7 @@ class LLMSmartStrategy(TradingStrategy):
                         ),
                     )
 
-                if llm_decision and llm_decision.get("action") in ["BUY", "SELL"]:
+                if execution_action(llm_decision) in ["BUY", "SELL"]:
                     # Check confidence threshold
                     confidence = llm_decision.get("confidence", 0)
                     if confidence >= self.confidence_threshold:
@@ -2347,6 +2348,12 @@ class LLMSmartStrategy(TradingStrategy):
                     "shares": self.shares,
                     "observation_timeframe": "daily bars through " + asof,
                     "macd_cross": comprehensive_context.get("macd_analysis", {}).get("macd_cross", "unknown"),
+                    "macd_alignment": (
+                        "above" if current_data.get("macd", float("nan")) > current_data.get("macd_signal", float("nan"))
+                        else "below" if current_data.get("macd", float("nan")) < current_data.get("macd_signal", float("nan"))
+                        else "equal" if current_data.get("macd", float("nan")) == current_data.get("macd_signal", float("nan"))
+                        else "unknown"
+                    ),
                     "technical_facts": {
                         "rsi": comprehensive_context.get("momentum_indicators", {}).get("rsi"),
                         "adx": comprehensive_context.get("trend_analysis", {}).get("adx_value"),
@@ -2389,7 +2396,7 @@ class LLMSmartStrategy(TradingStrategy):
             # End the prompt with the output task, after retrieved evidence.
             prompt += (
                 "\nReturn decision JSON with action, confidence, risk_level, reasoning, expected_outcome, explanation. "
-                "Include all four explanation sections specified above. State observed facts separately from "
+                "Include all explanation sections specified above. State observed facts separately from "
                 "interpretation and forecasts; distinguish timeframes. Conditional SELL may follow a future BUY, "
                 "but requires position long. Never report an anticipated crossover as observed.\n"
             )
@@ -2672,7 +2679,7 @@ Position held: {"Position held" if self.current_position else "No position"}"""
     ) -> Optional[TradingSignal]:
         """from LLM Create trading signal from decision"""
 
-        action = decision.get("action")
+        action = execution_action(decision)
         if action not in ["BUY", "SELL"]:
             return None
 
