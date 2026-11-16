@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 /data/stage-gates.sqlite3*
+/data/*.memory.sqlite3*
 /data/stage-work.lock
 /trader-response/
 .envrc

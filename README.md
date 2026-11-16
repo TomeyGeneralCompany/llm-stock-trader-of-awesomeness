@@ -11,6 +11,8 @@ The interface, prompts, explanations, logs, comments, and project documentation 
 
 Backtests follow enforced stages: **ACQUIRE → PREPARE → ANALYZE → SIMULATE → REVIEW → REPORT**. Each gate validates and saves its handoff before the next stage starts. The dashboard shows stage status, evidence, and **Stop after stage**. See the [stage gate guide](docs/stage-gates.md) for completion criteria and resource settings.
 
+Model prompts now use [chunked evidence and tiered memory](docs/memory-and-chunking.md): immutable originals on disk, recent decision episodes, and a bounded current working state.
+
 ## System Architecture
 
 ```mermaid

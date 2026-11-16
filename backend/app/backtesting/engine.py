@@ -7,10 +7,10 @@ Designed as an LLM accessible tool, Provides a concise API interface
 """
 
 import logging
-import uuid
-from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -390,6 +390,11 @@ class CustomBacktestEngine:
                         for index, row in stock_data.iterrows()
                     ],
                 )
+            if hasattr(strategy, "memory"):
+                from app.llm.memory import DecisionMemory
+
+                strategy.memory = DecisionMemory(gates.run_id, gates.store.path + ".memory.sqlite3")
+                strategy.memory.archive_file(Path(__file__).parents[1] / "llm/strategies/prompt/traditional_strategy.md")
             signals = strategy.generate_signals(enhanced_data)
 
             gates.complete(

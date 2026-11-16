@@ -26,3 +26,5 @@ To run the same probe on a local installation:
 ```bash
 PYTHONPATH=backend TRADER_TEST_MODE=model-question TRADER_TEST_PROMPT="Explain moving averages." uv run python -m app.ask_trader
 ```
+
+The sample also exercises [chunked evidence and tiered memory](memory-and-chunking.md). Its artifact includes original sources and exact prompts in SQLite. Placeholder explanations receive one correction attempt and cannot pass as completed decisions.

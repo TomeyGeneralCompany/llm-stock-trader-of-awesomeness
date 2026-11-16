@@ -174,21 +174,12 @@ def validate_output(stage: Stage, output: dict, previous: Optional[dict]) -> dic
             if log.get("date") not in dates:
                 raise GateError("A model decision belongs to a different data period.")
             decision = log.get("decision")
-            if not isinstance(decision, dict) or decision.get("action") not in (
-                "BUY",
-                "SELL",
-                "HOLD",
-            ):
-                raise GateError("A model decision was missing or invalid.")
-            if decision.get("risk_level") not in ("low", "medium", "high") or not all(
-                isinstance(decision.get(key), str) and decision[key].strip()
-                for key in ("reasoning", "expected_outcome")
-            ):
-                raise GateError(
-                    "A model decision is missing its explanation or risk assessment."
-                )
-            if not 0 <= _finite(decision.get("confidence"), "decision confidence") <= 1:
-                raise GateError("Decision confidence must be between 0 and 1.")
+            from app.llm.decisions import DecisionError, validate_decision
+
+            try:
+                validate_decision(decision)
+            except DecisionError as exc:
+                raise GateError(str(exc)) from exc
         for key, value in output.get("strategy_state", {}).items():
             if key in (
                 "cash",

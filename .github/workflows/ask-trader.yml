@@ -30,6 +30,7 @@ jobs:
       OLLAMA_NUM_THREAD: '4'
       OLLAMA_NUM_CTX: '8192'
       OLLAMA_THINK: 'false'
+      PIPELINE_DB_PATH: trader-response/stage-gates.sqlite3
       OLLAMA_TIMEOUT_SECONDS: '0'
       TRADER_TEST_MODE: ${{ inputs.mode }}
       TRADER_TEST_PROMPT: ${{ inputs.prompt }}

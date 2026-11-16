@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     PIPELINE_LOCK_PATH: str = str(env_path.parent / "data" / "stage-work.lock")
     PIPELINE_NUM_THREADS: int = Field(default=4, ge=1)
 
+    MEMORY_CHUNK_CHARS: int = Field(default=768, ge=128, le=4096)
+    MEMORY_RECENT_EPISODES: int = Field(default=6, ge=0, le=50)
+
     # Local Qwen inference through the existing Ollama installation.
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_MODEL: str = "qwen3:4b"

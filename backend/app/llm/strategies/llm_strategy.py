@@ -19,6 +19,9 @@ from ...utils.unrealized_pnl_tracker import UnrealizedPnLTracker
 from ..analysis.enhanced_technical_analyzer import EnhancedTechnicalAnalyzer
 from ..analysis.trend_analyzer import EnhancedTrendAnalyzer
 from ..client import OllamaError, get_llm_client
+from ..decisions import DecisionError, validate_decision
+from ..memory import DecisionMemory, digest, prompt_budget
+from ...backtesting.gates import json_value
 from .base import (
     ParameterSpec,
     ParameterType,
@@ -43,7 +46,9 @@ class LLMSmartStrategy(TradingStrategy):
 
     def __init__(self, config: StrategyConfig):
         super().__init__(config)
-        self.llm_client = get_llm_client(temperature=0.1, response_format="json")
+        self.llm_client = get_llm_client(temperature=0.1, max_tokens=1500, response_format="json")
+        self.memory = None
+        self.owner_question = "Explain your decision and what evidence would change it."
         self.trend_analyzer = EnhancedTrendAnalyzer()
         self.enhanced_analyzer = EnhancedTechnicalAnalyzer()
 
@@ -162,27 +167,12 @@ class LLMSmartStrategy(TradingStrategy):
 
     def _get_default_strategy_prompt(self) -> str:
         """Get default strategy prompt"""
-        return """
-# Default decision principles
-
-Write all reasoning and expected outcomes in English.
-
-## Basic strategy
-- uptrend: Consider entering or holding a position
-- downtrend: Exit the position
-- consolidation: Wait cautiously
-
-Please respond in JSON format with your decision: 
-```json
-{
-    "action": "BUY" | "SELL" | "HOLD",
-    "confidence": 0.0-1.0,
-    "reasoning": "Decision reasoning",
-    "risk_level": "low" | "medium" | "high",
-    "expected_outcome": "Expected outcome"
-}
-```
-"""
+        return (
+            "Return JSON with action BUY/SELL/HOLD, confidence 0..1, risk_level "
+            "low/medium/high, English reasoning grounded in supplied observations, "
+            "and expected_outcome stating what evidence would change the decision. "
+            "Avoid downtrend entry and require multiple technical confirmations."
+        )
 
     def _send_progress(
         self,
@@ -2248,6 +2238,10 @@ Please respond in JSON format with your decision:
             print(f"🧠 Start LLM Decision (Event count: {len(events)})...")
             self.total_llm_calls += 1  # Increase LLM Call count
 
+            # A caller cannot expose later observations through working state.
+            data = data.loc[data.index <= current_date]
+            if data.empty:
+                raise ValueError("No observations are available at the decision date.")
             # Prepare context data
             current_data = data.iloc[-1]
             recent_data = data.tail(5)
@@ -2299,32 +2293,124 @@ Please respond in JSON format with your decision:
                 print("❌ Error: LLM Prompt construction failed (Return None)")
                 return None
 
-            print(f"📝 LLM Prompt construction completed (Length: {len(prompt)} characters)")
+            print(
+                f"📝 LLM Prompt construction completed (Length: {len(prompt)} characters)"
+            )
+
+            # The controller owns cold evidence, warm episodes and hot state.
+            if self.memory is None:
+                self.memory = DecisionMemory()
+                self.memory.archive_file(
+                    os.path.join(
+                        os.path.dirname(__file__), "prompt", "traditional_strategy.md"
+                    )
+                )
+            asof = current_date.isoformat()
+            # Only observations available at this decision date enter memory.
+            available = data.loc[data.index <= current_date]
+            for offset in range(0, len(available), 32):
+                window = available.iloc[offset : offset + 32]
+                # A partially filled final window has its own immutable source.
+                source = (
+                    "market:"
+                    + window.index[0].isoformat()
+                    + ":"
+                    + window.index[-1].isoformat()
+                )
+                self.memory.archive(
+                    source,
+                    window.to_json(orient="split", date_format="iso"),
+                    window.index[-1].isoformat(),
+                )
+            enhanced = getattr(self, "current_enhanced_analysis", None)
+            trend_state = {
+                key: getattr(enhanced or trend_analysis, key, None)
+                for key in (
+                    "market_phase",
+                    "dominant_trend",
+                    "trend_consistency",
+                    "reversal_probability",
+                    "momentum_status",
+                    "risk_level",
+                )
+            }
+            working = json_value(
+                {
+                    "symbol": self.current_symbol,
+                    "asof": asof,
+                    "cash": self.cash,
+                    "shares": self.shares,
+                    "position": str(self.current_position),
+                    "current": {
+                        key: current_data[key]
+                        for key in (
+                            "close",
+                            "volume",
+                            "rsi",
+                            "macd",
+                            "macd_signal",
+                            "bb_upper",
+                            "bb_lower",
+                            "ma_20",
+                            "ma_50",
+                        )
+                        if key in current_data
+                    },
+                    "events": events,
+                    "trend": trend_state,
+                    "entry_price": self.position_entry_price,
+                    "entry_date": str(self.position_entry_date),
+                }
+            )
+            config = self.llm_client.config
+            budget = prompt_budget(config.num_ctx, config.max_tokens)
+            prompt, receipt = self.memory.assemble(
+                asof=asof,
+                instructions=self.strategy_prompt,
+                working=working,
+                evidence=prompt,
+                query=self.owner_question,
+                budget=budget - 400,
+            )
 
             # Call LLM
             print(f"🤖 Calling LLM...")
-            response = self.llm_client.invoke(prompt)
-
-            # Check LLM whether the response is valid
-            if response is None:
-                print("❌ Error: LLM Response is empty (response is None)")
-                return None
-
-            if not hasattr(response, "content") or response.content is None:
-                print("❌ Error: LLM Response content is empty (response.content is None)")
-                return None
-
-            print(f"📡 LLM Response received (Length: {len(response.content)} characters)")
-
-            # Parse LLM Response
-            decision = self._parse_llm_response(response.content)
-            print(f"🔍 LLM Response parsing completed: {decision}")
+            attempts = []
+            for attempt in range(2):
+                self.memory.archive(f"attempt-prompt:{asof}:{attempt}", prompt, asof)
+                response = self.llm_client.invoke(prompt)
+                self.memory.archive(f"attempt-response:{asof}:{attempt}", response.content, asof)
+                attempts.append(response.content)
+                decision = self._parse_llm_response(response.content)
+                try:
+                    validate_decision(decision)
+                    break
+                except DecisionError as exc:
+                    if attempt:
+                        self.memory.archive(
+                            "rejected:" + asof, json.dumps(attempts), asof
+                        )
+                        raise DecisionError(
+                            "Invalid model decision after correction: " + str(exc)
+                        ) from exc
+                    # A bounded same-stage retry; never manufacture a HOLD fallback.
+                    prompt += (
+                        "\nCorrection: return all five fields with numeric confidence and concrete "
+                        "English reasoning and expected_outcome. Do not copy placeholder text.\n"
+                    )
+            receipt["attempts"] = len(attempts)
+            receipt["final_prompt_sha256"] = digest(prompt)
+            receipt["final_prompt_bytes"] = len(prompt.encode())
+            self.memory.archive("final-prompt:" + asof, prompt, asof)
+            self.memory.archive("response:" + asof, json.dumps(attempts), asof)
+            self.memory.remember(asof, decision)
 
             # Record decision log
             self.decision_log.append(
                 {
                     "date": current_date,
                     "events": events,
+                    "memory": receipt,
                     "decision": decision,
                     "reasoning": decision.get("reasoning", "") if decision else "",
                 }
@@ -2332,7 +2418,7 @@ Please respond in JSON format with your decision:
 
             return decision
 
-        except OllamaError:
+        except (OllamaError, DecisionError, ValueError):
             # Surface a missing model or server to the backtest stream instead
             # of treating unavailable inference as a valid no-trade decision.
             raise
@@ -2342,7 +2428,6 @@ Please respond in JSON format with your decision:
 
             print(f"🔍 Error details: {traceback.format_exc()}")
             return None
-
     def _build_decision_prompt(
         self,
         current_data: pd.Series,
@@ -2540,10 +2625,7 @@ Position held: {"Position held" if self.current_position else "No position"}"""
 - Position recommendation: Normal position allocation"""
 
         # Add dynamically loaded strategy decision principles
-        prompt += f"""
-
-{self.strategy_prompt}
-"""
+        # Policy is inserted as mandatory instructions by the memory controller.
 
         return prompt
 

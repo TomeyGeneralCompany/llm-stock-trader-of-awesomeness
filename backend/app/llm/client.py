@@ -8,6 +8,7 @@ from typing import Literal, Optional
 import httpx
 
 from app.config import settings
+from app.llm.memory import prompt_budget
 from app.stage_resources import StageResourceError, inference_resources
 
 # All client instances share the installation's heavy-work resource slot.
@@ -71,6 +72,12 @@ class OllamaClient:
     def invoke(self, prompt: str) -> LLMResponse:
         """Return the completed answer, excluding Ollama's separate thinking field."""
         config = self.config
+        if len(prompt.encode("utf-8")) > prompt_budget(
+            config.num_ctx, config.max_tokens
+        ):
+            raise OllamaError(
+                "Prompt exceeds the context budget. Retrieve fewer evidence chunks or increase OLLAMA_NUM_CTX."
+            )
         payload = {
             "model": config.model,
             "messages": [{"role": "user", "content": prompt}],

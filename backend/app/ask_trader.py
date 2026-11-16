@@ -94,12 +94,7 @@ def run_probe(mode: str, prompt: str) -> dict:
                 "SAMPLE", data.index[-1].strftime("%Y-%m-%d")
             )
             strategy.current_enhanced_analysis = enhanced
-            strategy.strategy_prompt += (
-                "\n\n## Owner's question about this sample\n"
-                + prompt
-                + "\nAddress the question in your English reasoning and expected_outcome. "
-                "Keep the required JSON decision format."
-            )
+            strategy.owner_question = prompt
             events = [
                 {
                     "event_type": "MANUAL_REVIEW",
@@ -127,6 +122,7 @@ def run_probe(mode: str, prompt: str) -> dict:
                 ),
                 {"rows": frame_records(data)},
             )
+        result["memory"] = strategy.decision_log[-1]["memory"]
         result["decision"] = decision
         result["answer"] = json.dumps(decision, indent=2, ensure_ascii=False)
         result["market_data"] = frame_records(data)
@@ -155,6 +151,15 @@ def write_response(
         + html.escape(result.get("answer", result.get("error", "")))
         + "</pre>\n"
     )
+    if "memory" in result:
+        memory = result["memory"]
+        text += (
+            "\n## Context and memory\n\n"
+            f"Active prompt: {memory['final_prompt_bytes']} UTF-8 bytes; "
+            f"retrieved chunks/episodes: {len(memory['references'])}; "
+            f"model attempts: {memory['attempts']}. "
+            "Evidence references and hashes are in response.json; originals are in the memory SQLite artifact.\n"
+        )
     (directory / "response.md").write_text(text, encoding="utf-8")
     if summary_path:
         with Path(summary_path).open("a", encoding="utf-8") as output:

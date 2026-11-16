@@ -529,6 +529,14 @@ def test_actual_qwen_strategy_runs_inside_all_gates_without_refetching(
     assert len(gates.store.artifact(gates.run_id, Stage.ANALYZE)["decisions"]) == len(
         calls
     )
+    decisions = gates.store.artifact(gates.run_id, Stage.ANALYZE)["decisions"]
+    for decision in decisions:
+        receipt = decision["memory"]
+        assert receipt["run_id"] == gates.run_id
+        assert receipt["asof"] == decision["date"]
+        assert receipt["references"]
+        assert all(ref["asof"] <= decision["date"] for ref in receipt["references"])
+        assert receipt["final_prompt_bytes"] + 1500 + 256 <= 8192
     assert result["performance_metrics"]["num_trades"] == 0
 
 
