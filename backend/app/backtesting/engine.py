@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -27,6 +26,7 @@ from ..utils.indicators import (
     calculate_moving_averages,
     calculate_rsi,
 )
+from .ledger import ExecutionLedger, ExecutionSettings, replay
 from .gates import (
     GateCancelled,
     Stage,
@@ -99,10 +99,18 @@ class Trade:
     status: TradeStatus  # Trade status
     signal_confidence: float = 0.0  # Signal strength
     reason: str = ""  # Trade reason
+    decision_timestamp: Optional[str] = None
+    execution_phase: str = "open"
+    realized_pnl: Optional[float] = None
+    cost_basis: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format, Ensure all values are JSON serializable"""
         return {
+            "decision_timestamp": self.decision_timestamp,
+            "execution_phase": self.execution_phase,
+            "realized_pnl": self.realized_pnl,
+            "cost_basis": self.cost_basis,
             "trade_id": str(self.trade_id),
             "timestamp": self.timestamp.isoformat()
             if hasattr(self.timestamp, "isoformat")
@@ -166,16 +174,16 @@ class BacktestConfig:
     Uses maximum share quantities familiar to ordinary investors instead
     """
 
-    initial_capital: float = 1000000.0  # Initial capital
-    max_shares_per_trade: int = 1000  # Maximum shares per buy
+    initial_capital: float = 10000.0  # Initial capital
+    max_shares_per_trade: Optional[int] = None  # Maximum shares per buy
     trading_mode: TradingMode = TradingMode.LONG_ONLY  # Trading mode
     trade_on_open: bool = (
-        False  # Whether to trade at the opening price (False=Closing price)
+        True  # Close decisions fill at the following opening price.
     )
     commission_rate: float = (
-        0.001425  # Commission rate (Approximately for Taiwan stocks 0.1425%)
+        0.001  # Fraction of executed notional.
     )
-    min_commission: float = 20.0  # Minimum commission (Taiwan stocks 20 currency units)
+    min_commission: float = 0.0  # Minimum commission (Taiwan stocks 20 currency units)
 
     def calculate_commission(self, trade_value: float) -> float:
         """Calculate commission"""
@@ -313,11 +321,16 @@ class CustomBacktestEngine:
         self,
         stock_data: pd.DataFrame,
         strategy: TradingStrategy,
-        initial_cash: float = 10000.0,
-        transaction_cost: float = 0.001,
+        initial_cash: Optional[float] = None,
+        transaction_cost: Optional[float] = None,
         symbol: str = None,
         gates: Optional[StageGateController] = None,
         report_builder=None,
+        max_position_size: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        min_commission: Optional[float] = None,
+        liquidate_at_end: bool = True,
     ) -> Dict[str, Any]:
         """
         Run backtest - Core method of the custom engine
@@ -332,6 +345,20 @@ class CustomBacktestEngine:
         Returns:
             Backtest results dictionary
         """
+        parameters = getattr(getattr(strategy, "config", None), "parameters", {}) or {}
+        initial_cash = self.config.initial_capital if initial_cash is None else initial_cash
+        transaction_cost = self.config.commission_rate if transaction_cost is None else transaction_cost
+        execution = ExecutionSettings(
+            initial_cash=initial_cash, commission_rate=transaction_cost,
+            min_commission=self.config.min_commission if min_commission is None else min_commission,
+            max_position_size=max_position_size if max_position_size is not None else parameters.get("max_position_size", parameters.get("position_size", 0.3)),
+            stop_loss=stop_loss if stop_loss is not None else parameters.get("stop_loss", parameters.get("max_loss_threshold", 0.05)),
+            take_profit=take_profit if take_profit is not None else parameters.get("take_profit", parameters.get("profit_taking_threshold", 0.1)),
+            max_shares_per_trade=self.config.max_shares_per_trade,
+            liquidate_at_end=liquidate_at_end,
+        )
+        if self.config.trading_mode != TradingMode.LONG_ONLY:
+            raise ValueError("The historical execution ledger currently supports long-only trading.")
         gates = gates or StageGateController(
             request={
                 "symbol": symbol,
@@ -355,7 +382,7 @@ class CustomBacktestEngine:
             logger.info(f"Start backtest, Use strategy {strategy_name}")
 
             # 1. Initialize portfolio state
-            portfolio = Portfolio(cash=initial_cash)
+            ledger = ExecutionLedger(execution, symbol or "UNKNOWN")
 
             # 2. Calculate technical indicators
             enhanced_data = self._prepare_technical_indicators(stock_data.copy())
@@ -395,6 +422,11 @@ class CustomBacktestEngine:
 
                 strategy.memory = DecisionMemory(gates.run_id, gates.store.path + ".memory.sqlite3")
                 strategy.memory.archive_file(Path(__file__).parents[1] / "llm/strategies/prompt/traditional_strategy.md")
+            if hasattr(strategy, "execution_controller"):
+                strategy.execution_controller = ledger
+                strategy.position_size = execution.max_position_size
+                strategy.max_loss_threshold = execution.stop_loss
+                strategy.profit_taking_threshold = execution.take_profit
             signals = strategy.generate_signals(enhanced_data)
 
             gates.complete(
@@ -406,7 +438,11 @@ class CustomBacktestEngine:
                     "timestamps": [index.isoformat() for index in enhanced_data.index],
                     "signals": [signal.to_dict() for signal in signals],
                     "decisions": getattr(strategy, "decision_log", []),
-                    "strategy_state": strategy_state(strategy),
+                    "strategy_state": ledger.state(),
+                    "execution_settings": execution.to_dict(),
+                    "decision_ledger": ledger.artifact() if ledger.finished else None,
+                    "valuation_prices": [float(value) for value in enhanced_data["close"]],
+
                 },
             )
             gates.start(Stage.SIMULATE)
@@ -425,95 +461,18 @@ class CustomBacktestEngine:
                 )
                 for row in sealed["signals"]
             ]
-            for key, value in sealed["strategy_state"].items():
-                if key == "position_entry_date" and value is not None:
-                    value = pd.Timestamp(value)
-                setattr(strategy, key, value)
-            logger.info(f"Generated {len(signals)} trading signals")
-
-            # 4. Run trading simulation
-            trades, portfolio_history = self._simulate_trading(
-                signals,
-                enhanced_data,
-                portfolio,
-                symbol=symbol or "UNKNOWN",
-                transaction_cost=transaction_cost,
-                initial_cash=initial_cash,
-            )
-
-            # 4.5. Backtest finalization - Force settlement of positions
-            final_date = enhanced_data.index[-1]
-            final_price = float(enhanced_data.iloc[-1]["close"])
-
-            # If the strategy has a finalize_backtest method, call it
-            if hasattr(strategy, "finalize_backtest"):
-                try:
-                    strategy.finalize_backtest(final_price, final_date)
-                    logger.info(
-                        f"Strategy {strategy_name} Backtest finalization completed"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Strategy {strategy_name} Backtest finalization failed: {e}"
-                    )
-
-            # If the portfolio still has positions, force settlement
-            current_position = portfolio.get_position(symbol or "UNKNOWN")
-            if current_position > 0:
-                logger.info(
-                    f"Detected unsettled position {current_position} shares, force settlement"
-                )
-
-                # Create forced settlement trade
-                final_trade = Trade(
-                    trade_id=f"FINAL_{len(trades)}",
-                    timestamp=final_date,
-                    symbol=symbol or "UNKNOWN",
-                    order_type=OrderType.SELL,
-                    shares=current_position,
-                    price=final_price,
-                    commission=0.0,  # No commission charged at backtest end
-                    total_cost=current_position * final_price,
-                    status=TradeStatus.EXECUTED,
-                    signal_confidence=1.0,
-                    reason="Forced settlement at backtest end",
-                )
-
-                # Execute forced settlement
-                portfolio.cash += current_position * final_price
-                portfolio.update_position(symbol or "UNKNOWN", 0)  # Clear position
-                trades.append(final_trade)
-
-                # Update the final portfolio history record
-                if portfolio_history:
-                    portfolio_history[-1].update(
-                        {
-                            "cash": portfolio.cash,
-                            "position": 0,
-                            "stock_value": 0,
-                            "total_value": portfolio.cash,
-                            "cumulative_return": (portfolio.cash - initial_cash)
-                            / initial_cash,
-                        }
-                    )
-
-                logger.info(
-                    f"Forced settlement completed: Sold {current_position} shares, Price ${final_price:.2f}"
-                )
-
-            gates.complete(
-                Stage.SIMULATE,
-                {
-                    "trades": [trade.to_dict() for trade in trades],
-                    "portfolio_history": portfolio_history,
-                    "strategy_state": strategy_state(strategy),
-                },
-            )
+            # The second pass verifies sealed decisions; it must reproduce the
+            # same fills and state that the next chronological decision observed.
+            execution = ExecutionSettings(**sealed["execution_settings"])
+            verified = self._replay_execution(enhanced_data, signals, execution, symbol or "UNKNOWN")
+            if sealed["decision_ledger"] is not None and verified.artifact() != sealed["decision_ledger"]:
+                raise ValueError("Execution replay differs from the ledger used by decisions.")
+            gates.complete(Stage.SIMULATE, {**verified.artifact(), "execution_settings": execution.to_dict()})
             gates.start(Stage.REVIEW)
-            replay = gates.store.artifact(gates.run_id, Stage.SIMULATE)
+            simulation = gates.store.artifact(gates.run_id, Stage.SIMULATE)
             portfolio_history = [
                 {**row, "date": pd.Timestamp(row["date"])}
-                for row in replay["portfolio_history"]
+                for row in simulation["portfolio_history"]
             ]
             trades = [
                 Trade(
@@ -524,7 +483,7 @@ class CustomBacktestEngine:
                         "status": TradeStatus(row["status"]),
                     }
                 )
-                for row in replay["trades"]
+                for row in simulation["trades"]
             ]
             enhanced_data = records_frame(
                 gates.store.artifact(gates.run_id, Stage.PREPARE)["rows"]
@@ -538,10 +497,12 @@ class CustomBacktestEngine:
                 signals,
                 symbol=symbol or "UNKNOWN",
                 strategy_name=strategy_name,
-                strategy=SimpleNamespace(**replay["strategy_state"]),
+                strategy=None,
                 initial_cash=initial_cash,
             )
 
+            results["execution_settings"] = simulation["execution_settings"]
+            results["orders"] = simulation["orders"]
             gates.complete(Stage.REVIEW, {"results": results})
             gates.start(Stage.REPORT)
             results = gates.store.artifact(gates.run_id, Stage.REVIEW)["results"]
@@ -591,256 +552,22 @@ class CustomBacktestEngine:
 
         return data
 
-    def _simulate_trading(
-        self,
-        signals: List[TradingSignal],
-        data: pd.DataFrame,
-        portfolio: Portfolio,
-        symbol: str,
-        transaction_cost: float = 0.001,
-        initial_cash: float = 10000.0,
-    ) -> Tuple[List[Trade], List[Dict[str, Any]]]:
-        """
-        Simulate trade execution - Core trading logic
+    def _replay_execution(self, data, signals, execution, symbol):
+        return replay(data, signals, execution, symbol)
 
-        Args:
-            signals: List of trading signals
-            data: Stock price data
-            portfolio: Portfolio state
-            symbol: Stock symbol
-
-        Returns:
-            (List of trade records, Portfolio history)
-        """
-        trades = []
-        portfolio_history = []
-        trade_counter = 0
-
-        # Build signal lookup table
-        signal_dict = {}
-        for signal in signals:
-            date_key = signal.timestamp.date()
-            if date_key not in signal_dict:
-                signal_dict[date_key] = []
-            signal_dict[date_key].append(signal)
-
-        # Simulate trading day by day
-        for date, row in data.iterrows():
-            current_date = date.date() if hasattr(date, "date") else date
-            current_price = float(row["close"])
-
-            # Check for signals on the current day
-            daily_signals = signal_dict.get(current_date, [])
-
-            # Process trading signals
-            for signal in daily_signals:
-                if signal.signal_type == SignalType.BUY:
-                    trade = self._execute_buy_order(
-                        signal,
-                        current_price,
-                        portfolio,
-                        symbol,
-                        trade_counter,
-                        transaction_cost,
-                    )
-                    if trade:
-                        trades.append(trade)
-                        trade_counter += 1
-
-                elif signal.signal_type == SignalType.SELL:
-                    trade = self._execute_sell_order(
-                        signal,
-                        current_price,
-                        portfolio,
-                        symbol,
-                        trade_counter,
-                        transaction_cost,
-                    )
-                    if trade:
-                        trades.append(trade)
-                        trade_counter += 1
-
-            # Record daily portfolio state
-            current_position = portfolio.get_position(symbol)
-            stock_value = current_position * current_price
-            total_value = portfolio.cash + stock_value
-
-            # Calculate cumulative return (relative to initial capital)
-            cumulative_return = (total_value - initial_cash) / initial_cash
-
-            # Calculate unrealized P&L and return for this trade
-            unrealized_pnl = 0.0
-            unrealized_pnl_pct = 0.0
-            position_entry_price = 0.0
-
-            # If a position is held, Calculate unrealized P&L
-            if current_position > 0:
-                # Find entry price from the most recent buy trade
-                recent_buy_trades = [t for t in trades if t.order_type.value == "buy"]
-                if recent_buy_trades:
-                    latest_buy_trade = recent_buy_trades[-1]
-                    position_entry_price = latest_buy_trade.price
-                    cost_basis = current_position * position_entry_price
-                    unrealized_pnl = stock_value - cost_basis
-                    unrealized_pnl_pct = (
-                        (unrealized_pnl / cost_basis) * 100 if cost_basis > 0 else 0.0
-                    )
-
-            portfolio_snapshot = {
-                "date": date,
-                "cash": portfolio.cash,
-                "position": current_position,
-                "stock_price": current_price,
-                "stock_value": stock_value,
-                "total_value": total_value,
-                "cumulative_return": cumulative_return,
-                "unrealized_pnl": unrealized_pnl,
-                "unrealized_pnl_pct": unrealized_pnl_pct,
-                "position_entry_price": position_entry_price,
-                "position_cost_basis": current_position * position_entry_price
-                if current_position > 0
-                else 0.0,
-            }
-            portfolio_history.append(portfolio_snapshot)
-
-        return trades, portfolio_history
-
-    def _execute_buy_order(
-        self,
-        signal: TradingSignal,
-        price: float,
-        portfolio: Portfolio,
-        symbol: str,
-        trade_id: int,
-        transaction_cost: float = 0.001,
-    ) -> Optional[Trade]:
-        """
-        Execute buy order
-
-        Args:
-            signal: Buy signal
-            price: Execution price
-            portfolio: Portfolio state
-            symbol: Stock symbol
-            trade_id: Trade ID
-
-        Returns:
-            Trade record or None (if execution is not possible)
-        """
-        # In long-only mode, do not buy again if shares are already held
-        if (
-            self.config.trading_mode == TradingMode.LONG_ONLY
-            and portfolio.get_position(symbol) > 0
-        ):
-            logger.info(f"Already holding {symbol}, Skip buy signal")
-            return None
-
-        # Calculate affordable shares
-        max_shares = (
-            self.config.max_shares_per_trade
-            if hasattr(self.config, "max_shares_per_trade")
-            else 100
-        )
-        trade_value = max_shares * price
-        commission = trade_value * transaction_cost
-        total_cost = trade_value + commission
-
-        # Check available funds
-        if portfolio.cash < total_cost:
-            # Adjust to affordable share quantity
-            available_cash = portfolio.cash - commission
-            if available_cash <= 0:
-                logger.warning(f"Insufficient funds, Unable to buy {symbol}")
-                return None
-
-            max_shares = int(available_cash // price)
-            if max_shares <= 0:
-                logger.warning(f"Insufficient funds, Unable to buy any {symbol} shares")
-                return None
-
-            trade_value = max_shares * price
-            commission = trade_value * transaction_cost
-            total_cost = trade_value + commission
-
-        # Execute buy
-        portfolio.cash -= total_cost
-        current_position = portfolio.get_position(symbol)
-        portfolio.update_position(symbol, current_position + max_shares)
-
-        # Create trade record
-        trade = Trade(
-            trade_id=f"T{trade_id:04d}",
-            timestamp=signal.timestamp,
-            symbol=symbol,
-            order_type=OrderType.BUY,
-            shares=max_shares,
-            price=price,
-            commission=commission,
-            total_cost=total_cost,
-            status=TradeStatus.EXECUTED,
-            signal_confidence=signal.confidence,
-            reason=signal.reason,
-        )
-
-        logger.info(f"Buy executed: {symbol} {max_shares} shares @ ${price:.2f}")
-        return trade
-
-    def _execute_sell_order(
-        self,
-        signal: TradingSignal,
-        price: float,
-        portfolio: Portfolio,
-        symbol: str,
-        trade_id: int,
-        transaction_cost: float = 0.001,
-    ) -> Optional[Trade]:
-        """
-        Execute sell order
-
-        Args:
-            signal: Sell signal
-            price: Execution price
-            portfolio: Portfolio state
-            symbol: Stock symbol
-            trade_id: Trade ID
-
-        Returns:
-            Trade record or None (if execution is not possible)
-        """
-        current_position = portfolio.get_position(symbol)
-
-        # Check for shares available to sell
-        if current_position <= 0:
-            logger.debug(f"No {symbol} holdings, Unable to execute sale")
-            return None
-
-        # Sell all shares held
-        shares_to_sell = current_position
-        trade_value = shares_to_sell * price
-        commission = trade_value * transaction_cost
-        proceeds = trade_value - commission
-
-        # Execute sell
-        portfolio.cash += proceeds
-        portfolio.update_position(symbol, 0)
-
-        # Create trade record
-        trade = Trade(
-            trade_id=f"T{trade_id:04d}",
-            timestamp=signal.timestamp,
-            symbol=symbol,
-            order_type=OrderType.SELL,
-            shares=shares_to_sell,
-            price=price,
-            commission=commission,
-            total_cost=proceeds,  # For sell orders, this represents proceeds
-            status=TradeStatus.EXECUTED,
-            signal_confidence=signal.confidence,
-            reason=signal.reason,
-        )
-
-        logger.info(f"Sell executed: {symbol} {shares_to_sell} shares @ ${price:.2f}")
-        return trade
+    def _simulate_trading(self, signals, data, portfolio, symbol, transaction_cost=0.001, initial_cash=10000.0):
+        """Compatibility entry point, backed by the same finite-cash fill kernel."""
+        ledger = self._replay_execution(data, signals, ExecutionSettings(
+            initial_cash=initial_cash, commission_rate=transaction_cost,
+            min_commission=self.config.min_commission,
+            max_shares_per_trade=self.config.max_shares_per_trade,
+        ), symbol)
+        portfolio.cash = ledger.cash
+        portfolio.update_position(symbol, ledger.shares)
+        trades = [Trade(**{**row, "timestamp": pd.Timestamp(row["timestamp"]),
+                  "order_type": OrderType(row["order_type"]), "status": TradeStatus(row["status"])})
+                  for row in ledger.trades]
+        return trades, [{**row, "date": pd.Timestamp(row["date"])} for row in ledger.history]
 
     def _calculate_performance_metrics(
         self,
@@ -879,51 +606,19 @@ class CustomBacktestEngine:
         final_value = portfolio_history[-1]["total_value"]
         final_return = portfolio_history[-1]["cumulative_return"]
 
-        # Calculate annualized return
-        days_in_year = 365.25
-        years = total_days / days_in_year
-        annual_return = (
-            (final_value / self.config.initial_capital) ** (1 / years) - 1
-            if years > 0
-            else 0
-        )
-
-        # Calculate volatility
-        returns = [ph["cumulative_return"] for ph in portfolio_history]
-        returns_series = pd.Series(returns)
-        daily_returns = returns_series.pct_change().dropna()
-        volatility = daily_returns.std() * np.sqrt(252)  # Annualized volatility
-
-        # processing NaN value
-        if pd.isna(volatility):
-            volatility = 0.0
-
-        # Calculate maximum drawdown
-        values = [ph["total_value"] for ph in portfolio_history]
-        cummax = pd.Series(values).cummax()
-        drawdown = (pd.Series(values) - cummax) / cummax
-        max_drawdown = drawdown.min()
-
-        # processing NaN value
-        if pd.isna(max_drawdown):
-            max_drawdown = 0.0
-
-        # Trading statistics
+        # Include starting equity in returns/drawdown; never pct-change cumulative returns.
+        elapsed_days = (pd.Timestamp(end_date) - pd.Timestamp(start_date)).total_seconds() / 86400
+        years = elapsed_days / 365.25
+        annual_return = ((final_value / initial_cash) ** (1 / years) - 1) if years > 0 else 0.0
+        values = pd.Series([initial_cash] + [ph["total_value"] for ph in portfolio_history], dtype=float)
+        daily_returns = values.pct_change().iloc[1:]
+        volatility = float(daily_returns.std(ddof=1) * np.sqrt(252)) if len(daily_returns) > 1 else 0.0
+        max_drawdown = float((values / values.cummax() - 1).min())
         num_trades = len(trades)
-        buy_trades = [t for t in trades if t.order_type == OrderType.BUY]
-        sell_trades = [t for t in trades if t.order_type == OrderType.SELL]
-
-        # Calculate win rate (Requires matching buy and sell trades)
-        win_rate = 0.0
-        if len(buy_trades) > 0 and len(sell_trades) > 0:
-            # Simplified win-rate calculation: Compare buy and sell prices
-            paired_trades = min(len(buy_trades), len(sell_trades))
-            wins = sum(
-                1
-                for i in range(paired_trades)
-                if sell_trades[i].price > buy_trades[i].price
-            )
-            win_rate = wins / paired_trades if paired_trades > 0 else 0
+        exits = [trade for trade in trades if trade.order_type == OrderType.SELL]
+        realized_pnl = sum(trade.realized_pnl or 0.0 for trade in exits)
+        wins = sum((trade.realized_pnl or 0.0) > 0 for trade in exits)
+        win_rate = wins / len(exits) if exits else 0.0
 
         # Benchmark comparison (Buy and hold)
         buy_hold_return = (data["close"].iloc[-1] / data["close"].iloc[0]) - 1
@@ -968,9 +663,10 @@ class CustomBacktestEngine:
                 else str(end_date),
                 "total_days": int(total_days),
                 "initial_capital": float(initial_cash),
-                "max_shares_per_trade": int(self.config.max_shares_per_trade),
+                "max_shares_per_trade": self.config.max_shares_per_trade,
             },
             "performance_metrics": {
+                "total_commission": float(sum(trade.commission for trade in trades)),
                 "final_value": float(final_value),
                 "total_return": float(final_return),
                 "annual_return": float(annual_return),
@@ -980,22 +676,12 @@ class CustomBacktestEngine:
                 "win_rate": float(win_rate),
             },
             "strategy_statistics": {
-                # Get detailed statistics from the strategy (if available)
-                "total_realized_pnl": getattr(strategy, "total_realized_pnl", 0.0),
-                "total_trades": getattr(strategy, "total_trades", num_trades),
-                "winning_trades": getattr(strategy, "winning_trades", 0),
-                "strategy_win_rate": (
-                    getattr(strategy, "winning_trades", 0)
-                    / getattr(strategy, "total_trades", 1)
-                )
-                if getattr(strategy, "total_trades", 0) > 0
-                else 0.0,
-                "cumulative_trade_return_rate": sum(
-                    getattr(strategy, "trade_returns", [])
-                )
-                / 100
-                if hasattr(strategy, "trade_returns") and strategy.trade_returns
-                else 0.0,
+                "total_realized_pnl": float(realized_pnl),
+                "total_trades": len(exits),
+                "winning_trades": int(wins),
+                "strategy_win_rate": float(win_rate),
+                "cumulative_trade_return_rate": float(realized_pnl / initial_cash),
+                "total_commission": float(sum(trade.commission for trade in trades)),
             },
             "benchmark_comparison": {
                 "buy_hold_return": float(buy_hold_return),

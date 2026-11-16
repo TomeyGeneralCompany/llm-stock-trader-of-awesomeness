@@ -1,5 +1,6 @@
 """Exercise real controller transitions, evidence gates, and streamed backtests."""
 
+from types import SimpleNamespace
 import json
 import sqlite3
 import threading
@@ -140,7 +141,7 @@ def test_incomplete_analysis_cannot_reach_simulation(prices, monkeypatch):
     gates = StageGateController()
     engine = BacktestEngine()
     monkeypatch.setattr(
-        engine, "_simulate_trading", lambda *a, **k: pytest.fail("Simulation ran")
+        engine, "_replay_execution", lambda *a, **k: pytest.fail("Simulation ran")
     )
     with pytest.raises(GateError, match="did not finish"):
         engine.run_backtest(prices, strategy, gates=gates)
@@ -177,7 +178,7 @@ def test_bad_accounting_cannot_reach_review(prices, monkeypatch):
         {"date": d, "cash": 10, "stock_value": 20, "total_value": 99, "position": 1}
         for d in prices.index
     ]
-    monkeypatch.setattr(engine, "_simulate_trading", lambda *a, **k: ([], history))
+    monkeypatch.setattr(engine, "_replay_execution", lambda *a, **k: SimpleNamespace(artifact=lambda: {"trades": [], "portfolio_history": [{**r, "date": r["date"].isoformat()} for r in history], "orders": [], "strategy_state": {}, "pre_settlement": None}))
     with pytest.raises(GateError, match="does not reconcile"):
         engine.run_backtest(prices, FixtureStrategy(), gates=gates)
     assert gates.store.snapshot(gates.run_id)["stages"][4]["status"] == "blocked"
@@ -412,7 +413,7 @@ def test_stop_finishes_current_stage_then_blocks_later_stages(prices, monkeypatc
     engine = BacktestEngine()
     monkeypatch.setattr(
         engine,
-        "_simulate_trading",
+        "_replay_execution",
         lambda *a, **k: pytest.fail("Simulation ran after stop request"),
     )
     with pytest.raises(GateCancelled):

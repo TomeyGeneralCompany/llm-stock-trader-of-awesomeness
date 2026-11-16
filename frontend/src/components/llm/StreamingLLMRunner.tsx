@@ -122,7 +122,12 @@ const STAGES = ['ACQUIRE', 'PREPARE', 'ANALYZE', 'SIMULATE', 'REVIEW', 'REPORT']
 export default function StreamingLLMRunner() {
   const [symbol, setSymbol] = useState('AAPL')
   const [period, setPeriod] = useState('1y')
-  const [initialCapital] = useState(100000000) // Set 1 hundred million as unlimited capital, Does not affect pure trading P&L calculations
+  const [initialCapital, setInitialCapital] = useState(10000)
+  const [maxPosition, setMaxPosition] = useState(30)
+  const [stopLoss, setStopLoss] = useState(5)
+  const [takeProfit, setTakeProfit] = useState(10)
+  const [commissionRate, setCommissionRate] = useState(0.1)
+  const [minCommission, setMinCommission] = useState(0)
   
   const [isRunning, setIsRunning] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -219,7 +224,13 @@ export default function StreamingLLMRunner() {
     const params = new URLSearchParams({
       symbol,
       period,
-      session_id: sessionId, // Add session ID
+      session_id: sessionId,
+      initial_capital: String(initialCapital),
+      max_position_size: String(maxPosition / 100),
+      stop_loss: String(stopLoss / 100),
+      take_profit: String(takeProfit / 100),
+      commission_rate: String(commissionRate / 100),
+      min_commission: String(minCommission),
     })
 
     const url = `http://localhost:8000/api/v1/llm-stream/llm-backtest-stream?${params}`
@@ -565,17 +576,27 @@ export default function StreamingLLMRunner() {
             </div>
           </div>
           
-          <div className="bg-blue-50 p-4 rounded-lg mb-4">
-            <div className="text-sm text-blue-800">
-              <p className="font-medium">💰 Capital mode: Unlimited capital</p>
-              <p className="text-xs mt-1">The system uses unlimited-capital mode. P&L calculations use actual transaction costs rather than the initial capital setting.</p>
-            </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+            {[
+              { label: 'Starting cash ($)', value: initialCapital, set: setInitialCapital, min: 0.01, max: undefined },
+              { label: 'Maximum position (%)', value: maxPosition, set: setMaxPosition, min: 0.01, max: 100 },
+              { label: 'Stop loss (%) — 0 disables', value: stopLoss, set: setStopLoss, min: 0, max: 99.99 },
+              { label: 'Take profit (%) — 0 disables', value: takeProfit, set: setTakeProfit, min: 0, max: undefined },
+              { label: 'Commission per fill (%)', value: commissionRate, set: setCommissionRate, min: 0, max: 99.99 },
+              { label: 'Minimum commission ($)', value: minCommission, set: setMinCommission, min: 0, max: undefined },
+            ].map(field => (
+              <label key={field.label} className="text-sm space-y-1">
+                <span>{field.label}</span>
+                <Input type="number" step="0.01" min={field.min} max={field.max} value={field.value} disabled={isRunning || isStarting} onChange={event => field.set(Number(event.target.value))} />
+              </label>
+            ))}
           </div>
-          
+          <p className="text-xs text-gray-600 mb-4">Completed-bar decisions fill at the next open. Protective exits can fill during a bar; final liquidation includes commission.</p>
+
           <div className="flex gap-2 mt-4">
             <Button 
               onClick={startStreaming} 
-              disabled={isRunning || isStarting} 
+              disabled={isRunning || isStarting || ![initialCapital, maxPosition, stopLoss, takeProfit, commissionRate, minCommission].every(Number.isFinite) || initialCapital <= 0 || maxPosition <= 0 || maxPosition > 100 || stopLoss < 0 || stopLoss >= 100 || takeProfit < 0 || commissionRate < 0 || commissionRate >= 100 || minCommission < 0}
               className="flex-1"
             >
               {(isRunning || isStarting) ? (
