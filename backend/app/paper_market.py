@@ -1,6 +1,6 @@
 """Forward/replay market observations. All timestamps denote completed bar ends."""
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import csv
 import io
@@ -8,6 +8,10 @@ import math
 import re
 
 import pandas as pd
+from functools import lru_cache
+from pandas.tseries.holiday import (AbstractHolidayCalendar, Holiday, nearest_workday,
+    USMartinLutherKingJr, USPresidentsDay, GoodFriday, USMemorialDay,
+    USLaborDay, USThanksgivingDay)
 import requests
 import yfinance as yf
 
@@ -59,11 +63,49 @@ class Bar:
         return cls(row["symbol"], utc(row["end"]), *(float(row[k]) for k in ("open", "high", "low", "close", "volume")))
 
 
-def regular(bar, close_hour=16, close_minute=0):
+def _new_year_observed(day):
+    # NYSE does not observe a Saturday January 1 on the preceding Friday.
+    return day + pd.DateOffset(days=1) if day.weekday() == 6 else day
+
+
+class USMarketHolidays(AbstractHolidayCalendar):
+    rules = [
+        Holiday("New Year", month=1, day=1, observance=_new_year_observed),
+        USMartinLutherKingJr, USPresidentsDay, GoodFriday, USMemorialDay,
+        Holiday("Juneteenth", month=6, day=19, start_date="2022-01-01", observance=nearest_workday),
+        Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
+        USLaborDay, USThanksgivingDay,
+        Holiday("Christmas", month=12, day=25, observance=nearest_workday),
+    ]
+
+
+def market_close(day, override=None):
+    """Regular US exchange calendar; exceptional closures must be supplied by operator/feed."""
+    return _market_close(str(day), tuple(override) if override else None)
+
+
+@lru_cache(maxsize=512)
+def _market_close(day, override):
+    d = date.fromisoformat(day)
+    if d.weekday() >= 5 or len(USMarketHolidays().holidays(start=day, end=day)):
+        return None
+    if override:
+        return override
+    if (d.month, d.day) in ((7, 3), (12, 24)):
+        return (13, 0)
+    if d.month == 11 and d.weekday() == 4 and 23 <= d.day <= 29:
+        return (13, 0)
+    return (16, 0)
+
+
+def regular(bar, close_hour=None, close_minute=None):
     start, end = bar.start.astimezone(EASTERN), bar.end.astimezone(EASTERN)
+    close = market_close(end.date(), (close_hour, close_minute) if close_hour is not None else None)
+    if close is None:
+        return False
     return (start.weekday() < 5 and start.date() == end.date()
             and (start.hour, start.minute) >= (9, 30)
-            and (end.hour, end.minute) <= (close_hour, close_minute)
+            and (end.hour, end.minute) <= close
             and start.minute % BAR_MINUTES == 0
             and start.second == 0 and start.microsecond == 0)
 
