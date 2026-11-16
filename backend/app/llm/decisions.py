@@ -1,8 +1,16 @@
 """Shared semantic validation for inference and sealed analysis artifacts."""
 
 import math
+import re
 
-EXPLANATION_INSTRUCTIONS = "- explanation: an object with four required sections below. Keep all reasoning concise, concrete and in English.\n  - observed_state: object with timeframe, position (flat/long), market_phase and macd_cross copied accurately from controller facts, plus evidence (list of specific observations). A MACD line above signal is not a newly observed crossover.\n  - interpretation: explain how observations support the current action, including conflicting evidence. If a broad uptrend contains shorter consolidation, name both timeframes and the evidence for each. Label inferences as interpretations.\n  - forecast: object with scenario, timeframe, assumptions (nonempty list), and invalidation. Label anticipated transitions/crossovers as future possibilities, never observed facts.\n  - conditional_actions: nonempty list of objects with action (BUY/SELL/HOLD), trigger, timeframe, required_position (flat/long/any), prerequisite, and reasoning. Explain what evidence changes the decision and the sequence of positions needed. A future SELL is allowed while currently flat when it explicitly requires a prior entry and a long position; it is not a current executable SELL. HOLD while flat means waiting."
+EXPLANATION_INSTRUCTIONS = """explanation (concise English):
+- observed_state: timeframe, position (flat/long), market_phase, macd_cross, macd_alignment (above/below/equal/unknown), evidence (list). Copy controller facts; alignment is not a new crossover.
+- interpretation: explain current action and conflicting evidence; distinguish timeframes and inference.
+- forecast: scenario, timeframe, assumptions (nonempty list), invalidation. Future crosses are not observations.
+- conditional_actions: nonempty list of action (BUY/SELL/HOLD), trigger, timeframe, required_position (flat/long/any), prerequisite, reasoning. Future SELL requires long, after entry if flat.
+- risk_assessment: evidence (list of exact controller keys e.g. current.close), rationale, downside. No guaranteed safety.
+- execution: mode (now/wait), evidence (same key format), rationale. BUY/SELL only now on observed evidence; unmet triggers require HOLD/wait and conditional_actions."""
+
 
 
 class DecisionError(ValueError):
@@ -56,6 +64,30 @@ def _text(value, label):
         raise DecisionError("A model decision requires " + label + ".")
 
 
+def _controller_evidence(keys, context, label):
+    if not isinstance(keys, list) or not keys:
+        raise DecisionError(label + " requires controller evidence keys.")
+    for key in keys:
+        if not isinstance(key, str) or not key.startswith(("current.", "technical_facts.", "trend.", "macd_")):
+            raise DecisionError(label + " contains an invalid evidence key.")
+        value = context
+        for part in key.split("."):
+            value = value.get(part) if isinstance(value, dict) else None
+        if value is None or value == "unknown" or (isinstance(value, float) and not math.isfinite(value)):
+            raise DecisionError(label + " cites unavailable controller evidence: " + key)
+
+
+def execution_action(decision):
+    """Only explicit present-tense authorization produces a trading signal."""
+    if not isinstance(decision, dict):
+        return "HOLD"
+    execution = decision.get("explanation", {}).get("execution", {})
+    action = decision.get("action")
+    if action in ("BUY", "SELL") and execution.get("mode") == "now":
+        return action
+    return "HOLD"
+
+
 def validate_explanation(decision, context):
     """Validate explicit observations and conditional planning, not free prose claims."""
     explanation = decision.get("explanation")
@@ -91,6 +123,35 @@ def validate_explanation(decision, context):
             "Current SELL requires an existing long position; a future SELL belongs in conditional_actions with required_position long."
         )
     _text(explanation.get("interpretation"), "interpretation")
+    alignment = context.get("macd_alignment", "unknown")
+    if observed.get("macd_alignment") != alignment:
+        raise DecisionError("Observed MACD alignment must match controller; alignment is not a crossover.")
+    # Catch explicit claims of an already occurred cross, not anticipated scenarios.
+    if context["macd_cross"] == "none":
+        for claim in facts + [explanation["interpretation"], decision["reasoning"]]:
+            if re.search(r"\b(?:bullish|bearish|golden|death) cross(?:over)? (?:has occurred|occurred|has happened|happened|is confirmed|was confirmed)\b|\bMACD (?:has crossed|crossed) (?:above|below)\b", claim, re.I) and not re.search(r"\b(?:if|may|might|could|would|not|no|until|when)\b", claim, re.I):
+                raise DecisionError("No new MACD crossover is observed; distinguish alignment from a future cross.")
+    risk = explanation.get("risk_assessment")
+    if not isinstance(risk, dict):
+        raise DecisionError("Explanation requires risk_assessment.")
+    _controller_evidence(risk.get("evidence"), context, "Risk assessment")
+    for key in ("rationale", "downside"):
+        _text(risk.get(key), "risk_assessment." + key)
+    for claim in (risk["rationale"], decision["reasoning"], explanation["interpretation"]):
+        if re.search(r"\b(?:risk[- ]free|guaranteed (?:profit|return|safe)|zero risk|no downside)\b", claim, re.I) and not re.search(r"\b(?:not|never|no guarantee)\b", claim, re.I):
+            raise DecisionError("Risk rationale must not assert guaranteed safety.")
+    execution = explanation.get("execution")
+    if not isinstance(execution, dict):
+        raise DecisionError("Explanation requires execution intent.")
+    expected_mode = "wait" if decision["action"] == "HOLD" else "now"
+    if execution.get("mode") != expected_mode:
+        raise DecisionError("Current action must match execution mode: use HOLD for unmet future triggers.")
+    _controller_evidence(execution.get("evidence"), context, "Execution")
+    _text(execution.get("rationale"), "execution.rationale")
+    if expected_mode == "now":
+        for claim in (execution["rationale"], decision["reasoning"], explanation["interpretation"]):
+            if re.search(r"\b(?:wait (?:for|until)|only (?:buy|sell|enter|exit) (?:if|when|after)|(?:buy|sell|enter|exit) only (?:if|when|after)|(?:entry|exit) (?:requires|depends on) (?:a |the )?(?:future|confirmation|breakout))\b", claim, re.I):
+                raise DecisionError("Current order cannot depend on an unmet trigger; use HOLD and conditional_actions.")
     forecast = explanation.get("forecast")
     if not isinstance(forecast, dict):
         raise DecisionError("Explanation requires a forecast object.")
@@ -145,6 +206,12 @@ def format_decision_reasoning(decision):
         + "\nInvalidation: "
         + forecast["invalidation"]
     )
+    if "risk_assessment" in explanation:
+        risk = explanation["risk_assessment"]
+        text += "\n\nRisk: " + risk["rationale"] + "\nDownside: " + risk["downside"] + "\nEvidence: " + ", ".join(risk["evidence"])
+    if "execution" in explanation:
+        execution = explanation["execution"]
+        text += "\n\nExecution (" + execution["mode"] + "): " + execution["rationale"] + "\nEvidence: " + ", ".join(execution["evidence"])
     text += "\n\nConditional actions:"
     for plan in explanation["conditional_actions"]:
         text += (

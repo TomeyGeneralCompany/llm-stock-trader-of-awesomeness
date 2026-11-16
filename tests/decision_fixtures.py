@@ -19,9 +19,20 @@ def explained(decision, prompt):
             or context["trend"].get("dominant_trend")
             or "unknown",
             "macd_cross": context["macd_cross"],
+            "macd_alignment": context.get("macd_alignment", "unknown"),
             "evidence": ["Current close: " + str(context["current"]["close"])],
         },
-        "interpretation": "The current evidence warrants waiting for confirmation.",
+        "interpretation": "The current evidence supports the selected action.",
+        "risk_assessment": {
+            "evidence": ["current.close"],
+            "rationale": "The observed close informs price exposure, not certainty.",
+            "downside": "Price could move against the position.",
+        },
+        "execution": {
+            "mode": "wait" if result["action"] == "HOLD" else "now",
+            "evidence": ["current.close"],
+            "rationale": "The observed close supports the selected action.",
+        },
         "forecast": {
             "scenario": "An upward breakout is possible, not yet observed.",
             "timeframe": "Next daily bars",
