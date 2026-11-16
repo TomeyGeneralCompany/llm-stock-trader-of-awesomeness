@@ -3,9 +3,14 @@
 import math
 import re
 
-EXPLANATION_INSTRUCTIONS = "- explanation: an object with four required sections below. Keep all reasoning concise, concrete and in English.\n  - observed_state: object with timeframe, position (flat/long), market_phase and macd_cross copied accurately from controller facts, plus evidence (list of specific observations). A MACD line above signal is not a newly observed crossover.\n  - interpretation: explain how observations support the current action, including conflicting evidence. If a broad uptrend contains shorter consolidation, name both timeframes and the evidence for each. Label inferences as interpretations.\n  - forecast: object with scenario, timeframe, assumptions (nonempty list), and invalidation. Label anticipated transitions/crossovers as future possibilities, never observed facts.\n  - conditional_actions: nonempty list of objects with action (BUY/SELL/HOLD), trigger, timeframe, required_position (flat/long/any), prerequisite, and reasoning. Explain what evidence changes the decision and the sequence of positions needed. A future SELL is allowed while currently flat when it explicitly requires a prior entry and a long position; it is not a current executable SELL. HOLD while flat means waiting."
+EXPLANATION_INSTRUCTIONS = """explanation (concise English):
+- observed_state: timeframe, position (flat/long), market_phase, macd_cross, macd_alignment (above/below/equal/unknown), evidence (list). Copy controller facts; alignment is not a new crossover.
+- interpretation: explain current action and conflicting evidence; distinguish timeframes and inference.
+- forecast: scenario, timeframe, assumptions (nonempty list), invalidation. Future crosses are not observations.
+- conditional_actions: nonempty list of action (BUY/SELL/HOLD), trigger, timeframe, required_position (flat/long/any), prerequisite, reasoning. Future SELL requires long, after entry if flat.
+- risk_assessment: evidence (list of exact controller keys e.g. current.close), rationale, downside. No guaranteed safety.
+- execution: mode (now/wait), evidence (same key format), rationale. BUY/SELL only now on observed evidence; unmet triggers require HOLD/wait and conditional_actions."""
 
-EXPLANATION_INSTRUCTIONS += ("\n  - observed_state.macd_alignment: copy controller macd_alignment (above/below/equal/unknown); never call alignment a new cross.\n  - risk_assessment: object with evidence (list of exact dotted controller keys, e.g. current.close or technical_facts.resistance), rationale and downside; justify risk, never guarantee safety.\n  - execution: object with mode (now/wait), evidence (list of exact dotted controller keys), and rationale. BUY/SELL means now, already supported by observed evidence; HOLD means wait. If entry/exit depends on an unmet future trigger, action MUST be HOLD and the planned trade belongs in conditional_actions. Forecasts remain unrestricted.")
 
 
 class DecisionError(ValueError):
