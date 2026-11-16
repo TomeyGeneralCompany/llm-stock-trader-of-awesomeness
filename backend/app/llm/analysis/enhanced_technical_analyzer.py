@@ -38,75 +38,60 @@ class EnhancedTechnicalAnalyzer:
             Dict containing comprehensive technical analysis
         """
         try:
-            # Ensure data has proper date handling
-            working_data = data.copy()
-
-            # If index is date-like, reset it to create a date column
-            if hasattr(working_data.index, "date") or str(
-                working_data.index.dtype
-            ).startswith("datetime"):
-                working_data = working_data.reset_index()
-                if "index" in working_data.columns:
-                    working_data.rename(columns={"index": "date"}, inplace=True)
-
-            # If we still don't have a date column, check if there's a Date column
-            if "date" not in working_data.columns and "Date" in working_data.columns:
-                working_data.rename(columns={"Date": "date"}, inplace=True)
-
-            # Convert date column to string format for comparison if it exists
-            if "date" in working_data.columns:
-                working_data["date"] = pd.to_datetime(working_data["date"]).dt.strftime(
+            # Locate the requested observation by position, including named
+            # DatetimeIndexes such as the controller's `timestamp` index.
+            working_data = data.copy().reset_index(drop=True)
+            if isinstance(data.index, pd.DatetimeIndex):
+                dates = pd.Series(data.index).dt.strftime("%Y-%m-%d")
+            else:
+                date_column = next(
+                    (
+                        name
+                        for name in ("date", "Date", "timestamp", "Datetime")
+                        if name in data.columns
+                    ),
+                    None,
+                )
+                if date_column is None:
+                    raise ValueError(
+                        "Dated observations are required for technical context."
+                    )
+                dates = pd.to_datetime(working_data[date_column]).dt.strftime(
                     "%Y-%m-%d"
                 )
-
-                # Get data slice for analysis
-                current_idx = working_data[working_data["date"] == current_date].index
-                if len(current_idx) == 0:
-                    logger.warning(f"No data found for date: {current_date}")
-                    return self._empty_context()
-            else:
-                # If no date column available, use the last available data as current
-                logger.warning(
-                    f"No date column found, using last data point as current"
+            if not dates.is_monotonic_increasing:
+                raise ValueError(
+                    "Technical context requires chronological observations."
                 )
-                current_idx = [len(working_data) - 1]
-
-            current_idx = current_idx[0]
-            start_idx = max(0, current_idx - lookback_days)
-            end_idx = min(len(working_data), current_idx + 1)
-
-            analysis_data = working_data.iloc[start_idx:end_idx].copy()
-            current_data = working_data.iloc[current_idx]
+            matches = np.flatnonzero((dates == current_date).to_numpy())
+            if not len(matches):
+                raise ValueError("No observation for the requested context date.")
+            current_idx = int(matches[-1])
+            # Event lookback is not an indicator warmup limit. Rolling indicators
+            # need their full history, always ending at the requested date.
+            history = working_data.iloc[: current_idx + 1]
+            analysis_data = history.tail(lookback_days + 1)
+            current_data = history.iloc[-1]
 
             # Comprehensive analysis
             context = {
                 "date": current_date,
                 "price_action": self._analyze_price_action(analysis_data, current_data),
-                "moving_averages": self._analyze_moving_averages(
-                    analysis_data, current_data
-                ),
+                "moving_averages": self._analyze_moving_averages(history, current_data),
                 "volume_analysis": self._analyze_volume_patterns(
                     analysis_data, current_data
                 ),
-                "volatility_analysis": self._analyze_volatility(
-                    analysis_data, current_data
-                ),
-                "momentum_indicators": self._analyze_momentum(
-                    analysis_data, current_data
-                ),
+                "volatility_analysis": self._analyze_volatility(history, current_data),
+                "momentum_indicators": self._analyze_momentum(history, current_data),
                 "support_resistance": self._analyze_support_resistance(
                     analysis_data, current_data
                 ),
-                "trend_analysis": self._analyze_trend_strength(
-                    analysis_data, current_data
-                ),
-                "market_regime": self._classify_market_regime(
-                    analysis_data, current_data
-                ),
+                "trend_analysis": self._analyze_trend_strength(history, current_data),
+                "market_regime": self._classify_market_regime(history, current_data),
                 "bollinger_analysis": self._analyze_bollinger_bands(
-                    analysis_data, current_data
+                    history, current_data
                 ),
-                "macd_analysis": self._analyze_macd(analysis_data, current_data),
+                "macd_analysis": self._analyze_macd(history, current_data),
             }
 
             # Convert numpy types to JSON-serializable types
@@ -116,8 +101,7 @@ class EnhancedTechnicalAnalyzer:
 
         except Exception as e:
             logger.error(f"Error in comprehensive analysis: {e}")
-            return self._empty_context()
-
+            return {**self._empty_context(), "error": str(e)}
     def _analyze_price_action(
         self, data: pd.DataFrame, current: pd.Series
     ) -> Dict[str, Any]:
@@ -325,8 +309,8 @@ class EnhancedTechnicalAnalyzer:
                 else pd.Series([volatility])
             )
             vol_percentile = (
-                (volatility > historical_vol).mean() * 100
-                if len(historical_vol) > 0
+                (returns.std() > historical_vol.dropna()).mean() * 100
+                if len(historical_vol.dropna()) > 0
                 else 50
             )
 
@@ -494,12 +478,14 @@ class EnhancedTechnicalAnalyzer:
             volatility_info = self._analyze_volatility(data, current)
 
             # Classify regime
-            if trend_info.get("strong_trend", False):
-                if volatility_info.get("is_high_volatility", False):
+            trending = trend_info.get("strong_trend") in (True, "yes")
+            volatile = volatility_info.get("is_high_volatility") in (True, "yes")
+            if trending:
+                if volatile:
                     regime = "trending_volatile"
                 else:
                     regime = "trending_stable"
-            elif volatility_info.get("is_high_volatility", False):
+            elif volatile:
                 regime = "sideways_volatile"
             else:
                 regime = "sideways_stable"
@@ -507,8 +493,8 @@ class EnhancedTechnicalAnalyzer:
             return {
                 "market_regime": regime,
                 "regime_description": self._get_regime_description(regime),
-                "is_trending": trend_info.get("strong_trend", False),
-                "is_volatile": volatility_info.get("is_high_volatility", False),
+                "is_trending": trending,
+                "is_volatile": volatile,
             }
         except Exception as e:
             logger.error(f"Error in market regime classification: {e}")
@@ -576,11 +562,15 @@ class EnhancedTechnicalAnalyzer:
             if len(data) < 26:
                 return {}
 
-            # Calculate MACD
-            ema_12 = data["close"].ewm(span=12).mean()
-            ema_26 = data["close"].ewm(span=26).mean()
-            macd_line = ema_12 - ema_26
-            signal_line = macd_line.ewm(span=9).mean()
+            # Preserve the strategy's configured MACD periods when prepared
+            # indicators are present, rather than silently recomputing 12/26.
+            if {"macd", "macd_signal"}.issubset(data.columns):
+                macd_line, signal_line = data["macd"], data["macd_signal"]
+            else:
+                ema_12 = data["close"].ewm(span=12, adjust=False).mean()
+                ema_26 = data["close"].ewm(span=26, adjust=False).mean()
+                macd_line = ema_12 - ema_26
+                signal_line = macd_line.ewm(span=9, adjust=False).mean()
             histogram = macd_line - signal_line
 
             current_macd = macd_line.iloc[-1]

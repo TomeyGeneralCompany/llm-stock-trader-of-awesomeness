@@ -34,3 +34,5 @@ Local memory is stored beside `PIPELINE_DB_PATH`, with `.memory.sqlite3` appende
 | `PIPELINE_DB_PATH` | `data/stage-gates.sqlite3` | Gate database; also determines the memory database location |
 
 No additional Python dependencies are needed. Run `uv run pytest tests -q` for the mocked Ollama integration, stage handoffs, chunk preservation, temporal isolation, integrity, context limits and placeholder regressions. A real Qwen response remains a separate workflow test.
+
+Technical context keeps the full dated history for rolling-indicator warmup while using the short event window for recent price/volume patterns. It preserves prepared adaptive MACD values and interprets `yes`/`no` flags explicitly when classifying market regimes. Named date indexes are handled by the requested observation date.

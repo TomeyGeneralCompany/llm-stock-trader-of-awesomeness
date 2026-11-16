@@ -2373,6 +2373,12 @@ class LLMSmartStrategy(TradingStrategy):
                 budget=budget - 400,
             )
 
+            # End the prompt with the output task, after retrieved evidence.
+            prompt += (
+                "\nReturn only decision JSON: action, confidence, risk_level, reasoning, expected_outcome. "
+                "Do not return the working-state object. HOLD with zero shares means waiting. "
+                "MACD above signal does not prove a new crossover.\n"
+            )
             # Call LLM
             print(f"🤖 Calling LLM...")
             attempts = []
@@ -2446,7 +2452,7 @@ You are a professional stock trading strategy analyst. Write all reasoning and e
 
 ## Stock characteristics analysis
 - Volatility: {stock_characteristics.get("volatility", 0):.3f}
-- Trend consistency: {stock_characteristics.get("trend_consistency", 0):.3f}
+- Historical calibration trend consistency: {stock_characteristics.get("trend_consistency", 0):.3f}
 - MACD Effectiveness: {stock_characteristics.get("macd_effectiveness", 0):.3f}
 
 ## Current market data
