@@ -72,6 +72,8 @@ class LocalDecision:
         self.client = get_llm_client(max_tokens=1800, response_format="json")
 
     def __call__(self, context, lessons):
+        from app.llm.paper_schema import paper_decision_schema
+        self.client.config.response_schema = paper_decision_schema(context)
         instructions = (
             "You are the local paper-trading analyst. Pursue the portfolio's stated objective. "
             "Compare alternatives and actual prior outcomes. Never assume future facts or fills. "
@@ -102,10 +104,13 @@ class LocalDecision:
             raise ValueError("Paper decision context exceeds its budget")
         for attempt in range(2):
             try:
-                decision = json.loads(self.client.invoke(prompt).content)
+                raw = self.client.invoke(prompt).content
+                decision = json.loads(raw)
                 check_decision(decision, context)
                 return decision
             except (DecisionError, ValueError, KeyError, TypeError) as exc:
+                import logging
+                logging.getLogger(__name__).warning("Paper decision correction: %s; response=%s", str(exc), locals().get("raw", "")[:4000])
                 if attempt:
                     raise
                 prompt += "\nCorrection: " + str(exc)[:260] + ". Return complete JSON."

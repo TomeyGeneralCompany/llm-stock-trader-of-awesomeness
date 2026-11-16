@@ -342,3 +342,38 @@ def test_live_research_is_unavailable_before_inference_finishes(tmp_path):
         forecast=db.execute("SELECT available,target FROM market_forecasts").fetchone()
         assert forecast["available"]==stamp(finished)
         assert forecast["target"]==stamp(finished+timedelta(minutes=5))
+
+
+
+def test_native_paper_contract_keeps_semantic_gate_and_exact_controller_state(tmp_path,monkeypatch):
+    import httpx
+    from app.paper_trader import LocalDecision
+    contexts=[]
+    def capture(ctx,lessons):
+        contexts.append(ctx)
+        return response(ctx)
+    engine=PaperTrader(tmp_path/"paper.db",capture,challenge=False,initial=1000)
+    bars=day_bars()
+    engine.tick(bars,bars[-1].end)
+    context=contexts[0]
+    original=httpx.Client
+    requests=[]
+    def respond(request):
+        body=json.loads(request.content)
+        requests.append(body)
+        schema=body["format"]
+        observed=schema["properties"]["explanation"]["properties"]["observed_state"]["properties"]
+        assert observed["position"]["enum"]==["flat"]
+        assert observed["macd_cross"]["enum"]==[context["macd_cross"]]
+        assert body["options"]["num_thread"]==4 and body["options"]["num_ctx"]==8192
+        assert "SELL" not in schema["properties"]["action"]["enum"]
+        decision=response(context)
+        if len(requests)==1:
+            decision["explanation"]["observed_state"]["position"]="long"
+        else:
+            assert "Observed position must match controller" in body["messages"][0]["content"]
+        return httpx.Response(200,json={"done":True,"message":{"content":json.dumps(decision)}})
+    monkeypatch.setattr(httpx,"Client",lambda **kwargs:original(transport=httpx.MockTransport(respond),**kwargs))
+    result=LocalDecision()(context,[])
+    assert result["explanation"]["observed_state"]["position"]=="flat"
+    assert len(requests)==2

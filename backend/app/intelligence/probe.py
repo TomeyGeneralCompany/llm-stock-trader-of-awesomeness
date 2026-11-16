@@ -41,7 +41,7 @@ def run(directory, network=False):
     paper.tick(bars, now)
     report = paper.report()
     if not report["latest_decisions"]:
-        raise ValueError("Real Qwen paper decision failed validation; inspect events and prompts.")
+        raise ValueError("Real Qwen paper decision failed validation: "+json.dumps(report["recent_events"]))
     with intel.store.connect() as db:
         forecast = db.execute("SELECT * FROM market_forecasts LIMIT 1").fetchone()
     observed = datetime.fromisoformat(forecast["target"])+timedelta(minutes=5)
