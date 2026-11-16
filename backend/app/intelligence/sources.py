@@ -104,6 +104,7 @@ def parse_feed(payload, url, now):
 class SourceAcquisition:
     def __init__(self, store, config, fetch=None):
         self.store, self.config = store, config
+        self.time_source = None
         self.fetch = fetch or PublicFetcher(config.INTELLIGENCE_USER_AGENT, config.INTELLIGENCE_MAX_BYTES)
         self.register()
 
@@ -209,6 +210,8 @@ class SourceAcquisition:
             url += "?" + urlencode(params)
         fetch = PublicFetcher(self.config.SEC_USER_AGENT, self.config.INTELLIGENCE_MAX_BYTES) if job["source"] == "sec" and isinstance(self.fetch, PublicFetcher) else self.fetch
         raw = fetch(url, domains)
+        if self.time_source is not None:
+            now = max(stamp(now), stamp(self.time_source()))
         if job["kind"] == "article":
             soup = BeautifulSoup(raw, "html.parser")
             title = payload.get("title") or (soup.title.get_text(" ", strip=True) if soup.title else url)
@@ -267,6 +270,8 @@ class SourceAcquisition:
         ticker = yf.Ticker(symbol)
         if kind == "metadata":
             info = ticker.get_info()
+            if self.time_source is not None:
+                now = max(stamp(now), stamp(self.time_source()))
             self.store.security(symbol, {"company": info.get("longName", symbol), "sector": info.get("sector"),
                 "industry": info.get("industry"), "activities": info.get("longBusinessSummary"),
                 "headquarters_country": info.get("country"), "geographic_exposure": [],
@@ -283,6 +288,8 @@ class SourceAcquisition:
                 frame = ticker.history(start=beginning.isoformat(), end=ending.isoformat(), interval=interval, prepost=True, auto_adjust=False, timeout=20)
             else:
                 frame = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=False, timeout=20)
+            if self.time_source is not None:
+                now = max(stamp(now), stamp(self.time_source()))
             if frame.empty:
                 if kind=="history":
                     with self.store.connect() as db:

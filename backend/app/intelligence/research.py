@@ -78,7 +78,7 @@ class CausalResearch:
         return {"aggregate": aggregate(studies), "examples": studies[:3],
                 "grouping": "event_classification:"+category}
 
-    def step(self, now):
+    def step(self, now, time_source=None):
         now = stamp(now)
         with self.store.connect() as db:
             db.execute("UPDATE research_tasks SET status='queued',lease=NULL WHERE status='running' AND lease<?", (now,))
@@ -172,6 +172,8 @@ class CausalResearch:
                         if attempt:
                             raise
                         prompt += "\nCorrection: " + str(exc)[:350] + ". Return all five root keys; findings/relationships/hypotheses/followups are arrays, with cited evidence. direction must match the sign of expected_return."
+            if time_source is not None:
+                now = max(now, stamp(time_source()))
             self.store.log("ANALYZE", {"task": task["id"], "supported_findings": len(validated["findings"]), "hypotheses": len(validated["hypotheses"])}, now)
             finding_id = sha(task["id"] + now + raw)
             with self.store.connect() as db:

@@ -655,7 +655,7 @@ def main():
             window = hours and (9,30) <= (local.hour,local.minute) and now <= engine.closing(local.date().isoformat()) + timedelta(minutes=31)
             if not window and args.command != "once":
                 if intelligence is not None:
-                    intelligence.cycle(now)
+                    intelligence.cycle()
                 engine.tick([], now)
                 time.sleep(args.poll)
                 continue
@@ -676,7 +676,7 @@ def main():
             report = engine.report()
             if intelligence is not None:
                 intelligence.paper_audit(report, datetime.now(UTC))
-                intelligence.cycle(datetime.now(UTC), priority=watch)
+                intelligence.cycle(priority=watch)
             print(dump(report), flush=True)
         except KeyboardInterrupt:
             return

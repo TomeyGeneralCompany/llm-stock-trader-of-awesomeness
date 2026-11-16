@@ -38,9 +38,11 @@ class IntelligenceController:
         self.evaluate(now)
 
     def cycle(self, now=None, *, priority=(), acquire=True, research=True):
+        time_source = (lambda: datetime.now(UTC)) if now is None else None
         now = stamp(now)
         try:
             with self.lock:
+                self.acquisition.time_source = time_source
                 # Holdings/pending plans can accelerate their evidence acquisition.
                 with self.store.connect() as db:
                     db.execute("INSERT OR REPLACE INTO intelligence_state VALUES(?,?)", ("priority_symbols", dump(list(dict.fromkeys(list(priority)+self.priority_symbols(now))))))
@@ -50,12 +52,14 @@ class IntelligenceController:
                 if acquire:
                     with stage_resources("ACQUIRE"):
                         acquired = self.acquisition.process(now, self.config.INTELLIGENCE_NETWORK_JOBS)
+                if time_source is not None:
+                    now = stamp(time_source())
                 self.resume_price_research(now)
                 self.evaluate(now)
                 result = None
                 if research:
                     try:
-                        result = self.research.step(now)
+                        result = self.research.step(now, time_source=time_source)
                     except Exception:
                         # The durable task remains queued; acquisition and the paper
                         # controller must continue despite one analytical failure.

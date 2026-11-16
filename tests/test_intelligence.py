@@ -327,3 +327,18 @@ def test_research_relationship_enrichment_uses_asof_metadata(tmp_path):
     assert intel.store.catalog(WHEN)["AAA"]["industry"]=="Manufacturing"
     assert intel.store.catalog(WHEN+timedelta(days=2))["AAA"]["industry"]=="Future industry"
     assert intel.store.catalog(WHEN)["AAA"]["related_companies"][0]["company"]=="BBB"
+
+
+
+def test_live_research_is_unavailable_before_inference_finishes(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    intel.store.observe("AAA","5m",WHEN,dict(open=100,high=100,low=100,close=100,volume=100),WHEN)
+    finished=WHEN+timedelta(minutes=2)
+    intel.research.step(WHEN,time_source=lambda:finished)
+    assert not intel.context("AAA",WHEN)["catalysts"]
+    assert intel.context("AAA",finished)["catalysts"]
+    with intel.store.connect() as db:
+        forecast=db.execute("SELECT available,target FROM market_forecasts").fetchone()
+        assert forecast["available"]==stamp(finished)
+        assert forecast["target"]==stamp(finished+timedelta(minutes=5))
