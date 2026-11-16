@@ -54,7 +54,7 @@ def features(bars):
     return {
         "current": {"close": float(close.iloc[-1]), "volume": float(frame.volume.iloc[-1]),
                     "macd": float(macd.iloc[-1]), "macd_signal": float(signal.iloc[-1]), "rsi": float(rsi)},
-        "technical_facts": {"return_30m": change, "volatility_per_bar": volatility,
+        "technical_facts": {"return_6_bars": change, "volatility_per_bar": volatility,
                             "relative_volume": relative_volume,
                             "resistance": float(frame.high.iloc[-21:-1].max()),
                             "support": float(frame.low.iloc[-21:-1].min())},
@@ -397,7 +397,13 @@ class PaperTrader:
                     self.open_session(db, state, day, now)
                 if cursor is not None:
                     state["cursor"] = cursor
-                for bar in sorted(actual, key=lambda b: (b.end, b.symbol)):
+                latest = {}
+                for bar in actual:
+                    if bar.symbol not in latest or bar.end > latest[bar.symbol].end:
+                        latest[bar.symbol] = bar
+                # Process one latest observation per symbol; fill lookup and outcome
+                # scoring still use all persisted intervening bars.
+                for bar in sorted(latest.values(), key=lambda b: (b.end, b.symbol)):
                     # Existing orders only fill on the earliest persisted eligible bar,
                     # even if a provider omitted it from a later refresh.
                     if not state["closed"]:
@@ -407,15 +413,20 @@ class PaperTrader:
                                              if b.day == day and b.start >= utc(order["submitted"])), None)
                             if earliest:
                                 self.fill(db, state, earliest, now)
+                    saved_bar = db.execute("SELECT body FROM bars WHERE symbol=? AND end=?",
+                                           (bar.symbol, bar.end.isoformat())).fetchone()
+                    bar = Bar.from_record(json.loads(saved_bar[0]))
                     previous = state["marks"].get(bar.symbol)
-                    if not previous or bar.end >= utc(previous["end"]):
+                    if not previous or bar.end > utc(previous["end"]):
                         state["marks"][bar.symbol] = {"price": bar.close, "end": bar.end.isoformat()}
                     self.score_outcomes(db, bar.symbol, bar, now)
                 state["last_poll"] = now.isoformat()
                 closing = self.closing(day)
                 closing_seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (closing.isoformat(),)).fetchone()
                 # Allow delayed providers to deliver the final completed bar.
-                if finish or (now >= closing and (closing_seen or now >= closing + timedelta(minutes=30))):
+                required = set(state["holdings"]) | set(state["pending"])
+                final_marks = all(utc(state["marks"].get(sym, {"end": "1970-01-01T00:00:00+00:00"})["end"]) >= closing for sym in required)
+                if finish or (now >= closing and ((closing_seen and final_marks) or now >= closing + timedelta(minutes=30))):
                     self.end_session(db, state, now)
                 self.save(db, state)
                 if state["closed"] or now >= closing or state["goal_reached_at"]:
@@ -439,7 +450,7 @@ class PaperTrader:
                 if discoveries and len(selected) > 1 and all(x["symbol"] in prior for x in selected):
                     selected[-1] = discoveries[0]
                 alternatives = [{"symbol": x["symbol"], "score": round(x["score"], 6),
-                                 "return_30m": round(x["technical_facts"]["return_30m"], 5),
+                                 "return_6_bars": round(x["technical_facts"]["return_6_bars"], 5),
                                  "prior_forecast": prior.get(x["symbol"], {}).get("expected_return")}
                                 for x in ranked[:5]]
             for candidate in selected:
@@ -455,11 +466,14 @@ class PaperTrader:
                     # Bound retrieved plan text independently of model output size.
                     plans = [{"action": p["action"], "trigger": p["trigger"][:140],
                               "required_position": p["required_position"], "timeframe": p["timeframe"][:80]} for p in plans]
+                    exposure = [{"symbol": sym, "value": round(pos["shares"] * state["marks"][sym]["price"], 6)}
+                                for sym, pos in sorted(state["holdings"].items(), key=lambda item: -item[1]["basis"])[:4]]
                     context = {**candidate, "triggered_watches": candidate["triggered_watches"][:2],
                                "observation_timeframe": "5-minute completed bars through "+candidate["asof"],
                                "shares": state["holdings"].get(symbol, {}).get("shares", 0.),
                                "portfolio": {"available_cash": available, "unsettled": state["unsettled"],
                                              "equity": self.equity(state), "holding_count": len(state["holdings"]),
+                                             "largest_exposures": exposure,
                                              "symbol_basis": state["holdings"].get(symbol, {}).get("basis", 0.),
                                              "proceeds_reusable": self.reuse,
                                              "cost_fraction_each_side": self.cost, "fee": self.fee, "min_notional": self.minimum},
@@ -504,10 +518,19 @@ class PaperTrader:
             with self.connect() as db:
                 return self.state(db)
 
-    def watchlist(self):
+    def watchlist(self, now=None):
         with self.connect() as db:
             state = self.state(db)
-            recent = [r[0] for r in db.execute("SELECT DISTINCT symbol FROM decisions WHERE day=? ORDER BY id DESC LIMIT 20", (state["day"],))]
+            now = utc(now) if now else utc(state["last_poll"]) if state["last_poll"] else datetime.now(UTC)
+            recent = []
+            if not state["closed"]:
+                rows = db.execute("""SELECT symbol,bar,body FROM decisions WHERE day=? AND id IN
+                    (SELECT MAX(id) FROM decisions WHERE day=? GROUP BY symbol)""",
+                    (state["day"], state["day"])).fetchall()
+                for symbol, stamp, body in rows:
+                    decision = json.loads(body)
+                    if decision.get("watch_conditions") and now <= utc(stamp) + timedelta(minutes=BAR_MINUTES*decision["horizon_bars"]):
+                        recent.append(symbol)
             return sorted(set(state["holdings"]) | set(state["pending"]) | set(recent)), state["cursor"]
 
     def report(self):
@@ -519,6 +542,7 @@ def read_report(path):
     from contextlib import closing
     uri = Path(path).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=5)) as db:
+        db.execute("BEGIN")
         config = json.loads(db.execute("SELECT body FROM config WHERE id=1").fetchone()[0])
         state = json.loads(db.execute("SELECT body FROM state WHERE id=1").fetchone()[0])
         equity = state["cash"] + state["unsettled"] + sum(max(0., p["shares"]*state["marks"][sym]["price"]*(1-config["cost"])-config["fee"])
@@ -528,15 +552,33 @@ def read_report(path):
                 "sessions": [json.loads(r[0]) for r in db.execute("SELECT body FROM sessions ORDER BY day")],
                 "events": dict(db.execute("SELECT kind,count(*) FROM events GROUP BY kind")),
                 "forecasts": db.execute("SELECT count(*) FROM decisions").fetchone()[0],
-                "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0]}
+                "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0],
+                "latest_decisions": [{"symbol": sym, "bar": bar, "decision": json.loads(body)}
+                    for sym,bar,body in db.execute("SELECT symbol,bar,body FROM decisions ORDER BY id DESC LIMIT 8")],
+                "recent_events": [{"time": stamp, "kind": kind, "detail": json.loads(body)}
+                    for stamp,kind,body in db.execute("SELECT stamp,kind,body FROM events ORDER BY id DESC LIMIT 15")]}
 
 
-def replay(engine, bars):
+def replay(engine, bars, warmup_sessions=0):
+    if engine.mode != "replay":
+        raise ValueError("Replay requires a separate replay-mode account")
+    bars = [b for b in bars if regular(b, *(engine.close or (None,None)))]
+    days = sorted({bar.day for bar in bars})
+    if not days or warmup_sessions < 0 or warmup_sessions >= len(days):
+        raise ValueError("Replay requires at least one evaluation session beyond warmup")
+    warm_days = set(days[:warmup_sessions])
+    with engine.lock, engine.connect() as db:
+        if engine.state(db)["last_poll"]:
+            raise ValueError("Use a fresh database for each held-out replay")
+        warm = [b for b in bars if b.day in warm_days]
+        if warm:
+            engine.ingest(db, warm, max(b.end for b in warm))
     groups = defaultdict(list)
     # Historical CSV can include preceding sessions for warmup; every decision
     # only sees observations through the current replay clock.
     for bar in bars:
-        groups[bar.end].append(bar)
+        if bar.day not in warm_days:
+            groups[bar.end].append(bar)
     for end, group in sorted(groups.items()):
         engine.tick(group, end)
     return engine.report()
@@ -545,9 +587,11 @@ def replay(engine, bars):
 def main():
     p = argparse.ArgumentParser(description="Autonomous PAPER trader; no brokerage or real orders.")
     p.add_argument("command", choices=("run", "once", "replay", "status"))
-    p.add_argument("--db", default="data/paper-trader.sqlite3")
+    from app.config import settings
+    p.add_argument("--db", default=settings.PAPER_DB_PATH)
     p.add_argument("--symbols", help="Comma-separated override; default US exchange listings")
     p.add_argument("--csv", help="Replay CSV: symbol,end,open,high,low,close,volume; end in UTC")
+    p.add_argument("--warmup-sessions", type=int, default=1, help="Historical sessions loaded without inference or fills")
     p.add_argument("--normal", action="store_true", help="Use persistent normal portfolio rather than daily $1 challenge")
     p.add_argument("--capital", type=float, default=10000.)
     settlement = p.add_mutually_exclusive_group()
@@ -580,14 +624,21 @@ def main():
     if args.command == "replay":
         if not args.csv:
             p.error("replay requires --csv")
-        print(json.dumps(replay(engine, read_replay(args.csv)), indent=2))
+        print(json.dumps(replay(engine, read_replay(args.csv), args.warmup_sessions), indent=2))
         return
     universe = []
     refreshed = None
     while True:
         try:
             now = datetime.now(UTC)
-            watch, cursor = engine.watchlist()
+            local = now.astimezone(EASTERN)
+            hours = market_close(local.date(), engine.close)
+            window = hours and (9,30) <= (local.hour,local.minute) and now <= engine.closing(local.date().isoformat()) + timedelta(minutes=31)
+            if not window and args.command != "once":
+                engine.tick([], now)
+                time.sleep(args.poll)
+                continue
+            watch, cursor = engine.watchlist(now)
             if not universe or refreshed != now.astimezone(EASTERN).date():
                 with stage_resources("ACQUIRE"):
                     universe = sorted(set(args.symbols.upper().split(","))) if args.symbols else listed_symbols()

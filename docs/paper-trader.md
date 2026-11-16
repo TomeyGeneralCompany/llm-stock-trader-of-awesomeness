@@ -28,7 +28,7 @@ The default daily challenge uses immediate reuse of paper proceeds to support in
 PYTHONPATH=backend uv run python -m app.paper_trader replay --csv unseen.csv --db data/paper-replay.sqlite3
 ```
 
-CSV columns: symbol,end,open,high,low,close,volume. `end` is the ISO-8601 timestamp of a completed five-minute bar, with timezone. Supply preceding market history for indicator warmup. Each inference receives only observations available at that replay time; outcomes are scored only after their horizon has elapsed. A separate replay database prevents contamination of the forward account. Use an untouched file of held-out sessions and new ledger per evaluation; do not tune on the evaluation file. Replay advances on recorded bar times; forward mode uses wall-clock time for submission and rejects late decisions. Neither a fixture nor historical replay establishes live performance.
+CSV columns: symbol,end,open,high,low,close,volume. `end` is the ISO-8601 timestamp of a completed five-minute bar, with timezone. Supply preceding market history. By default the first session is warmup only; use `--warmup-sessions N` to specify how many preceding sessions are loaded without decisions or fills. Each inference receives only observations available at that replay time; outcomes are scored only after their horizon has elapsed. A separate replay database prevents contamination of the forward account. Use an untouched file of held-out sessions and new ledger per evaluation; do not tune on the evaluation file. Replay advances on recorded bar times; forward mode uses wall-clock time for submission and rejects late decisions. Neither a fixture nor historical replay establishes live performance.
 
 ## Continuous operation
 
@@ -41,4 +41,4 @@ journalctl --user -u paper-trader.service -f
 systemctl --user stop paper-trader.service
 ```
 
-The writer is serialized, SQLite commits each state transition and event together, and it resumes from saved state after restart. The service retries data/analysis errors without inventing trades. For detailed records, query the SQLite tables `bars`, `decisions`, `outcomes`, `events`, `sessions`, `state`, and `config`. The system uses paper-only accounting and does not include Robinhood integration.
+The writer is serialized, SQLite commits each state transition and event together, and it resumes from saved state after restart. The service retries data/analysis errors without inventing trades. The existing web dashboard also exposes read-only paper status, using the configured PAPER_DB_PATH. For detailed records, query the SQLite tables `bars`, `decisions`, `outcomes`, `events`, `sessions`, `state`, and `config`. The system uses paper-only accounting and does not include Robinhood integration.

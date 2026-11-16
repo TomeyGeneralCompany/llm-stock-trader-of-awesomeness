@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     DEFAULT_INITIAL_CAPITAL: float = 10000.0
     DEFAULT_COMMISSION: float = 0.001
     PIPELINE_DB_PATH: str = str(env_path.parent / "data" / "stage-gates.sqlite3")
+    PAPER_DB_PATH: str = str(env_path.parent / "data" / "paper-trader.sqlite3")
     PIPELINE_LOCK_PATH: str = str(env_path.parent / "data" / "stage-work.lock")
     PIPELINE_NUM_THREADS: int = Field(default=4, ge=1)
 
