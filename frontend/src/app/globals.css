@@ -121,7 +121,7 @@
   }
 }
 
-/* 自定義滾動條樣式 */
+/* Custom scrollbar styles */
 @layer utilities {
   .scrollbar-thin::-webkit-scrollbar {
     width: 8px;
@@ -142,7 +142,7 @@
     background: rgb(107 114 128);
   }
   
-  /* Firefox 滾動條樣式 */
+  /* Firefox Scrollbar styles */
   .scrollbar-thin {
     scrollbar-width: thin;
     scrollbar-color: rgb(156 163 175) rgb(243 244 246);

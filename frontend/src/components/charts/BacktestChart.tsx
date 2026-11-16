@@ -5,21 +5,21 @@ import { createChart, Time } from 'lightweight-charts'
 import { StockData, TradingSignal, LLMDecisionLog } from '@/types'
 
 interface BacktestChartProps {
-  /** 股票價格數據 */
+  /** Stock price data */
   stockData: StockData[]
-  /** 交易信號數據 */
+  /** Trading signal data */
   signals?: TradingSignal[]
-  /** LLM 決策記錄 */
+  /** LLM Decision recording */
   llmDecisions?: LLMDecisionLog[]
-  /** 圖表高度 */
+  /** Chart height */
   height?: number
-  /** 是否顯示成交量 */
+  /** Whether to display volume */
   showVolume?: boolean
 }
 
 /**
- * 回測結果圖表組件
- * 專注於顯示交易信號和 LLM 決策，使用 TradingView Lightweight Charts
+ * Backtest results chart component
+ * Focuses on trading signals and LLM Decision, using TradingView Lightweight Charts
  */
 export function BacktestChart({
   stockData,
@@ -30,7 +30,7 @@ export function BacktestChart({
 }: BacktestChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
 
-  // 數據驗證和過濾
+  // Data validation and filtering
   const validStockData = React.useMemo(() => {
     if (!stockData || !Array.isArray(stockData)) {
       return []
@@ -45,7 +45,7 @@ export function BacktestChart({
       if (typeof item.close !== 'number' || !isFinite(item.close)) return false
       if (typeof item.volume !== 'number' || !isFinite(item.volume) || item.volume < 0) return false
       
-      // OHLC 邏輯驗證
+      // OHLC Logic validation
       if (item.high < item.low || item.high < item.open || item.high < item.close) return false
       if (item.low > item.open || item.low > item.close) return false
       
@@ -53,7 +53,7 @@ export function BacktestChart({
     })
   }, [stockData])
 
-  // 時間轉換函數
+  // Time conversion function
   const convertTimestamp = (timestamp: string): number => {
     let date: Date
     
@@ -66,7 +66,7 @@ export function BacktestChart({
     }
     
     if (isNaN(date.getTime())) {
-      console.warn('無效的時間格式:', timestamp)
+      console.warn('Invalid time format:', timestamp)
       return Math.floor(Date.now() / 1000)
     }
     
@@ -78,8 +78,8 @@ export function BacktestChart({
       return
     }
 
-    // 調試信息 - 檢查傳入的數據
-    console.log('BacktestChart 數據調試:', {
+    // Debug information - Check incoming data
+    console.log('BacktestChart Data debugging:', {
       stockDataLength: validStockData.length,
       signalsLength: signals.length,
       llmDecisionsLength: llmDecisions.length,
@@ -88,15 +88,15 @@ export function BacktestChart({
       stockDataSample: validStockData.slice(0, 2)
     })
 
-    // 清空容器
+    // Clear container
     chartContainerRef.current.innerHTML = ''
 
-    // 創建圖表容器
+    // Create chart container
     const chartContainer = document.createElement('div')
     chartContainer.style.height = `${height}px`
     chartContainerRef.current.appendChild(chartContainer)
 
-    // 創建圖表
+    // Create chart
     const chart = createChart(chartContainer, {
       width: chartContainerRef.current.clientWidth,
       height: height,
@@ -118,7 +118,7 @@ export function BacktestChart({
       },
     })
 
-    // K線數據
+    // K candlestick data
     const candlestickData = validStockData.map(stock => ({
       time: convertTimestamp(stock.timestamp) as Time,
       open: stock.open,
@@ -127,7 +127,7 @@ export function BacktestChart({
       close: stock.close,
     }))
 
-    // 添加K線圖
+    // Add K Candlestick chart
     const candlestickSeries = chart.addCandlestickSeries({
       upColor: '#26a69a',
       downColor: '#ef5350',
@@ -138,7 +138,7 @@ export function BacktestChart({
     })
     candlestickSeries.setData(candlestickData)
 
-    // 添加成交量
+    // Add volume
     if (showVolume) {
       const volumeData = validStockData.map(stock => ({
         time: convertTimestamp(stock.timestamp) as Time,
@@ -164,24 +164,24 @@ export function BacktestChart({
       })
     }
 
-    // 合併並處理所有標記（交易信號 + LLM決策）
+    // Combine and process all markers (Trading signals + LLM Decision) 
     const allMarkers: any[] = []
 
-    // 1. 添加交易信號標記 (BUY/SELL)
+    // 1. Add trading signal markers (BUY/SELL)
     if (signals.length > 0) {
-      console.log('處理交易信號數據:', signals)
+      console.log('Process trading signal data:', signals)
       
       const validSignals = signals.filter(signal => {
         const isValid = signal && signal.timestamp && signal.signal_type && 
                typeof signal.price === 'number' && isFinite(signal.price)
         
         if (!isValid) {
-          console.warn('無效的信號數據:', signal)
+          console.warn('Invalid signal data:', signal)
         }
         return isValid
       })
 
-      console.log(`有效信號數量: ${validSignals.length}/${signals.length}`)
+      console.log(`Valid signal count: ${validSignals.length}/${signals.length}`)
 
       const tradingMarkers = validSignals.map(signal => {
         const marker = {
@@ -190,30 +190,30 @@ export function BacktestChart({
           color: signal.signal_type === 'BUY' ? '#26a69a' : '#ef5350',
           shape: (signal.signal_type === 'BUY' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
           text: signal.signal_type === 'BUY' ? 'BUY' : 'SELL',
-          size: 2, // 調整箭頭大小 (預設是1，範圍0-4)
-          id: `signal_${signal.timestamp}_${signal.signal_type}` // 防止重複
+          size: 2, // Adjust arrow size (Default is 1, Range 0-4)
+          id: `signal_${signal.timestamp}_${signal.signal_type}` // Prevent duplicates
         }
-        console.log('創建交易標記:', { original: signal, marker })
+        console.log('Create trade markers:', { original: signal, marker })
         return marker
       })
       
       allMarkers.push(...tradingMarkers)
     }
 
-    // 2. 添加 LLM 純思考決策標記（不包含實際交易的決策）
+    // 2. Add LLM Reasoning-only decision markers (Decisions without an actual trade) 
     if (llmDecisions.length > 0) {
-      console.log('處理LLM決策數據:', llmDecisions)
+      console.log('processing LLM Decision data:', llmDecisions)
       
       const validDecisions = llmDecisions.filter(decision => {
-        // 檢查基本數據結構：需要 timestamp 和 reasoning
+        // Check basic data structure: Requires timestamp and reasoning
         const hasBasicData = decision && decision.timestamp && decision.reasoning
         
-        // LLM 決策應該是 action: "THINK"，不是實際的交易信號
+        // LLM Decision should be action: "THINK", not an actual trading signal
         const isThinkingDecision = decision.action === 'THINK'
         
         const isValid = hasBasicData && isThinkingDecision
         if (!isValid) {
-          console.warn('過濾掉的LLM決策:', decision, { 
+          console.warn('Filtered out LLM Decision:', decision, { 
             hasBasicData, 
             isThinkingDecision, 
             actualAction: decision.action 
@@ -222,45 +222,45 @@ export function BacktestChart({
         return isValid
       })
 
-      console.log(`有效LLM決策數量: ${validDecisions.length}/${llmDecisions.length}`)
+      console.log(`Valid LLM Decision count: ${validDecisions.length}/${llmDecisions.length}`)
 
       const thinkingMarkers = validDecisions.map(decision => {
         const confidence = decision.confidence || decision.decision?.confidence || 0.5
         const alpha = Math.max(0.6, confidence)
         
-        // 使用 timestamp 字段（新格式）或 date 字段（向後兼容）
+        // using timestamp fields (New format) or date fields (Backward compatibility) 
         const timeValue = decision.timestamp || decision.date || ''
         
         const marker = {
           time: convertTimestamp(timeValue) as Time,
-          position: 'aboveBar' as 'aboveBar',  // 在K棒上方
-          color: `rgba(255, 193, 7, ${alpha})`, // 黃色，根據信心度調整透明度
-          shape: 'arrowDown' as 'arrowDown',   // 向下箭頭
-          text: 'AI',  // 簡潔的AI標識
-          size: 1.0,   // 適中的大小
+          position: 'aboveBar' as 'aboveBar',  // During K Above candle
+          color: `rgba(255, 193, 7, ${alpha})`, // Yellow, Adjust opacity based on confidence
+          shape: 'arrowDown' as 'arrowDown',   // Down arrow
+          text: 'AI',  // Concise AI label
+          size: 1.0,   // Moderate size
           id: `llm_${timeValue}_thinking`
         }
-        console.log('創建LLM標記:', { original: decision, marker })
+        console.log('Create LLM Marker:', { original: decision, marker })
         return marker
       })
       
       allMarkers.push(...thinkingMarkers)
     }
 
-    // 3. 設置合併後的標記
+    // 3. Set merged markers
     if (allMarkers.length > 0) {
       try {
-        // 按時間排序標記
+        // Sort markers by time
         allMarkers.sort((a, b) => (a.time as number) - (b.time as number))
         candlestickSeries.setMarkers(allMarkers)
-        console.log(`✅ 成功設置了 ${allMarkers.length} 個圖表標記:`, allMarkers)
+        console.log(`✅ Successfully set ${allMarkers.length} chart markers:`, allMarkers)
       } catch (error) {
-        console.error('❌ 設置圖表標記時出錯:', error)
+        console.error('❌ Error setting chart markers:', error)
       }
     } else {
-      console.log('⚠️ 沒有任何標記數據可設置')
+      console.log('⚠️ No marker data available')
       
-      // 如果沒有真實數據，創建一些測試標記來驗證圖表功能
+      // If there is no real data, Create test markers to verify chart functionality
       if (validStockData.length > 10) {
         const testMarkers = [
           {
@@ -291,16 +291,16 @@ export function BacktestChart({
         
         try {
           candlestickSeries.setMarkers(testMarkers)
-          console.log('🧪 設置了測試標記來驗證圖表功能')
+          console.log('🧪 Test markers set to verify chart functionality')
         } catch (error) {
-          console.error('❌ 設置測試標記失敗:', error)
+          console.error('❌ Failed to set test markers:', error)
         }
       }
     }
 
     chart.timeScale().fitContent()
 
-    // 響應式調整
+    // Responsive resizing
     const handleResize = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({
@@ -320,7 +320,7 @@ export function BacktestChart({
   if (!validStockData.length) {
     return (
       <div className="w-full h-64 flex items-center justify-center bg-gray-50 rounded-lg">
-        <p className="text-gray-500">無有效的回測數據</p>
+        <p className="text-gray-500">No valid backtest data</p>
       </div>
     )
   }
@@ -333,20 +333,20 @@ export function BacktestChart({
         style={{ height: `${height}px` }}
       />
       
-      {/* 圖例 */}
+      {/* Legend */}
       <div className="flex flex-wrap justify-center mt-4 space-x-4 text-sm">
         <div className="flex items-center space-x-2">
           <div className="flex space-x-1">
             <div className="w-2 h-4 bg-green-600"></div>
             <div className="w-2 h-4 bg-red-500"></div>
           </div>
-          <span>K線圖</span>
+          <span>K Candlestick chart</span>
         </div>
         
         {showVolume && (
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-gray-400 rounded"></div>
-            <span>成交量</span>
+            <span>Volume</span>
           </div>
         )}
         
@@ -354,11 +354,11 @@ export function BacktestChart({
           <>
             <div className="flex items-center space-x-2">
               <span className="text-green-600 text-lg font-bold">▲</span>
-              <span className="font-medium">買入信號</span>
+              <span className="font-medium">Buy signal</span>
             </div>
             <div className="flex items-center space-x-2">
               <span className="text-red-500 text-lg font-bold">▼</span>
-              <span className="font-medium">賣出信號</span>
+              <span className="font-medium">Sell signal</span>
             </div>
           </>
         )}
@@ -366,29 +366,29 @@ export function BacktestChart({
         {llmDecisions.length > 0 && (
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
-            <span>AI 決策點</span>
+            <span>AI Decision points</span>
           </div>
         )}
       </div>
       
-      {/* 統計信息 */}
+      {/* Statistics */}
       {(signals.length > 0 || llmDecisions.length > 0) && (
         <div className="mt-4 p-3 bg-gray-50 rounded-lg">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             {signals.length > 0 && (
               <>
                 <div>
-                  <span className="text-gray-600">交易信號:</span>
+                  <span className="text-gray-600">Trading signals:</span>
                   <span className="ml-2 font-medium">{signals.length}</span>
                 </div>
                 <div>
-                  <span className="text-gray-600">買入:</span>
+                  <span className="text-gray-600">Buy:</span>
                   <span className="ml-2 font-medium text-green-600 text-lg">
                     ▲ {signals.filter(s => s.signal_type === 'BUY').length}
                   </span>
                 </div>
                 <div>
-                  <span className="text-gray-600">賣出:</span>
+                  <span className="text-gray-600">Sell:</span>
                   <span className="ml-2 font-medium text-red-500 text-lg">
                     ▼ {signals.filter(s => s.signal_type === 'SELL').length}
                   </span>
@@ -397,7 +397,7 @@ export function BacktestChart({
             )}
             {llmDecisions.length > 0 && (
               <div>
-                <span className="text-gray-600">AI 決策:</span>
+                <span className="text-gray-600">AI Decision:</span>
                 <span className="ml-2 font-medium">{llmDecisions.length}</span>
               </div>
             )}

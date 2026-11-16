@@ -29,30 +29,30 @@ class OrderType(Enum):
 class OrderStatus(Enum):
     """Order Status"""
 
-    PENDING = "pending"  # 待执行
-    FILLED = "filled"  # 已成交
-    CANCELLED = "cancelled"  # 已取消
-    REJECTED = "rejected"  # 已拒绝
+    PENDING = "pending"  # Pending
+    FILLED = "filled"  # Filled
+    CANCELLED = "cancelled"  # Cancelled
+    REJECTED = "rejected"  # Rejected
 
 
 @dataclass
 class Order:
     """
-    订单数据类
+    Order data class
 
     Attributes:
-        order_id: 订单ID
-        symbol: 交易标的
-        order_type: 订单类型
-        side: 买卖方向 (BUY/SELL)
-        quantity: 交易数量
-        price: 订单价格 (市价单为None)
-        timestamp: 下单时间
-        status: 订单状态
-        filled_price: 成交价格
-        filled_quantity: 成交数量
-        commission: 手续费
-        metadata: 额外信息
+        order_id: Order ID
+        symbol: Trading symbol
+        order_type: Order type
+        side: Trade direction (BUY/SELL)
+        quantity: Trade quantity
+        price: Order price (For market orders use None)
+        timestamp: Order submission time
+        status: Order status
+        filled_price: Fill price
+        filled_quantity: Filled quantity
+        commission: Commission
+        metadata: Additional information
     """
 
     order_id: str
@@ -76,15 +76,15 @@ class Order:
 @dataclass
 class Position:
     """
-    持仓数据类
+    Position data class
 
     Attributes:
-        symbol: 交易标的
-        quantity: 持仓数量 (正数为多头，负数为空头)
-        avg_cost: 平均成本
-        market_value: 市值
-        unrealized_pnl: 未实现盈亏
-        realized_pnl: 已实现盈亏
+        symbol: Trading symbol
+        quantity: Position quantity (Positive for long positions, Negative for short positions)
+        avg_cost: Average cost
+        market_value: Market value
+        unrealized_pnl: Unrealized P&L
+        realized_pnl: Realized P&L
     """
 
     symbol: str
@@ -95,7 +95,7 @@ class Position:
     realized_pnl: float = 0.0
 
     def update_market_value(self, current_price: float) -> None:
-        """更新市值和未实现盈亏"""
+        """Update market value and unrealized P&L"""
         self.market_value = self.quantity * current_price
         if self.quantity != 0:
             self.unrealized_pnl = (current_price - self.avg_cost) * self.quantity
@@ -104,17 +104,17 @@ class Position:
 @dataclass
 class BacktestConfig:
     """
-    回测配置类
+    Backtest configuration class
 
     Attributes:
-        initial_capital: 初始资金
-        commission_rate: 手续费率 (0.001 = 0.1%)
-        slippage_rate: 滑点率 (0.0005 = 0.05%)
-        min_trade_amount: 最小交易金额
-        max_position_size: 最大持仓比例 (0.5 = 50%)
-        enable_short_selling: 是否允许做空
-        margin_requirement: 保证金要求 (做空时使用)
-        risk_free_rate: 无风险利率 (年化)
+        initial_capital: Initial capital
+        commission_rate: Commission rate (0.001 = 0.1%)
+        slippage_rate: Slippage rate (0.0005 = 0.05%)
+        min_trade_amount: Minimum trade value
+        max_position_size: Maximum position allocation (0.5 = 50%)
+        enable_short_selling: Whether short selling is allowed
+        margin_requirement: Margin requirement (Used for short selling)
+        risk_free_rate: Risk-free interest rate (Annualized)
     """
 
     initial_capital: float = 100000.0
@@ -129,17 +129,17 @@ class BacktestConfig:
 
 class Portfolio:
     """
-    投资组合管理器
+    Portfolio manager
 
-    管理现金、持仓、订单历史等投资组合状态
+    Manage cash, Positions, and order history in the portfolio state
     """
 
     def __init__(self, config: BacktestConfig):
         """
-        初始化投资组合
+        Initialize portfolio
 
         Args:
-            config: 回测配置
+            config: Backtest configuration
         """
         self.config = config
         self.cash = config.initial_capital
@@ -149,7 +149,7 @@ class Portfolio:
         self.daily_returns: List[float] = []
         self.portfolio_values: List[Tuple[pd.Timestamp, float]] = []
 
-        # 性能追踪
+        # Performance tracking
         self.total_commission_paid = 0.0
         self.total_slippage_cost = 0.0
         self.max_drawdown = 0.0
@@ -157,13 +157,13 @@ class Portfolio:
 
     def get_portfolio_value(self, current_prices: Dict[str, float]) -> float:
         """
-        计算当前投资组合总值
+        Calculate current total portfolio value
 
         Args:
-            current_prices: 当前价格字典 {symbol: price}
+            current_prices: Dictionary of current prices {symbol: price}
 
         Returns:
-            投资组合总值
+            Total portfolio value
         """
         total_value = self.cash
 
@@ -175,18 +175,18 @@ class Portfolio:
         return total_value
 
     def get_available_cash(self) -> float:
-        """获取可用现金"""
+        """Get available cash"""
         return self.cash
 
     def get_position(self, symbol: str) -> Position:
         """
-        获取持仓信息
+        Get position information
 
         Args:
-            symbol: 交易标的
+            symbol: Trading symbol
 
         Returns:
-            持仓对象
+            Position object
         """
         if symbol not in self.positions:
             self.positions[symbol] = Position(symbol=symbol)
@@ -196,45 +196,45 @@ class Portfolio:
         self, symbol: str, signal: TradingSignal, current_price: float
     ) -> float:
         """
-        计算交易数量
+        Calculate trade quantity
 
         Args:
-            symbol: 交易标的
-            signal: 交易信号
-            current_price: 当前价格
+            symbol: Trading symbol
+            signal: Trading signal
+            current_price: Current price
 
         Returns:
-            建议交易数量
+            Suggested trade quantity
         """
         portfolio_value = self.get_portfolio_value({symbol: current_price})
 
-        # 基于置信度和最大持仓比例计算仓位
+        # Calculate position size from confidence and maximum position allocation
         confidence_factor = signal.confidence
         max_position_value = (
             portfolio_value * self.config.max_position_size * confidence_factor
         )
 
         if signal.signal_type == SignalType.BUY:
-            # 买入信号
+            # Buy signal
             available_cash = self.get_available_cash()
-            trade_value = min(max_position_value, available_cash * 0.95)  # 保留5%现金
+            trade_value = min(max_position_value, available_cash * 0.95)  # Reserve 5%Cash
 
             if trade_value < self.config.min_trade_amount:
                 return 0.0
 
-            # 考虑手续费和滑点
+            # Account for commission and slippage
             effective_price = current_price * (
                 1 + self.config.commission_rate + self.config.slippage_rate
             )
             quantity = trade_value / effective_price
 
         elif signal.signal_type == SignalType.SELL:
-            # 卖出信号
+            # Sell signal
             current_position = self.get_position(symbol)
             if current_position.quantity <= 0:
                 return 0.0
 
-            # 基于置信度决定卖出比例
+            # Determine sale proportion based on confidence
             sell_ratio = confidence_factor
             quantity = current_position.quantity * sell_ratio
 
@@ -253,18 +253,18 @@ class Portfolio:
         timestamp: Optional[pd.Timestamp] = None,
     ) -> Order:
         """
-        下单
+        Place order
 
         Args:
-            symbol: 交易标的
-            side: 买卖方向
-            quantity: 交易数量
-            order_type: 订单类型
-            price: 限价单价格
-            timestamp: 下单时间
+            symbol: Trading symbol
+            side: Trade direction
+            quantity: Trade quantity
+            order_type: Order type
+            price: Limit order price
+            timestamp: Order submission time
 
         Returns:
-            订单对象
+            Order object
         """
         if timestamp is None:
             timestamp = pd.Timestamp.now()
@@ -286,19 +286,19 @@ class Portfolio:
 
     def execute_order(self, order: Order, market_price: float) -> bool:
         """
-        执行订单
+        Execute order
 
         Args:
-            order: 订单对象
-            market_price: 市场价格
+            order: Order object
+            market_price: Market price
 
         Returns:
-            是否执行成功
+            Whether execution succeeded
         """
         if order.status != OrderStatus.PENDING:
             return False
 
-        # 计算实际成交价格 (考虑滑点)
+        # Calculate actual fill price (Account for slippage)
         if order.side == SignalType.BUY:
             slippage = market_price * self.config.slippage_rate
             filled_price = market_price + slippage
@@ -306,11 +306,11 @@ class Portfolio:
             slippage = market_price * self.config.slippage_rate
             filled_price = market_price - slippage
 
-        # 计算手续费
+        # Calculate commission
         trade_value = order.quantity * filled_price
         commission = trade_value * self.config.commission_rate
 
-        # 检查是否有足够资金
+        # Check available funds
         if order.side == SignalType.BUY:
             required_cash = trade_value + commission
             if required_cash > self.cash:
@@ -318,11 +318,11 @@ class Portfolio:
                 order.metadata["rejection_reason"] = "Insufficient funds"
                 return False
 
-        # 执行交易
+        # Execute trade
         position = self.get_position(order.symbol)
 
         if order.side == SignalType.BUY:
-            # 买入
+            # Buy
             total_cost = position.quantity * position.avg_cost
             new_total_cost = total_cost + trade_value
             new_quantity = position.quantity + order.quantity
@@ -334,27 +334,27 @@ class Portfolio:
             self.cash -= trade_value + commission
 
         else:  # SELL
-            # 卖出
+            # Sell
             if order.quantity > position.quantity:
-                # 不能卖出超过持仓数量
+                # Cannot sell more shares than held
                 order.quantity = position.quantity
                 trade_value = order.quantity * filled_price
                 commission = trade_value * self.config.commission_rate
 
-            # 计算已实现盈亏
+            # Calculate realized P&L
             realized_pnl = (filled_price - position.avg_cost) * order.quantity
             position.realized_pnl += realized_pnl
             position.quantity -= order.quantity
 
             self.cash += trade_value - commission
 
-        # 更新订单状态
+        # Update order status
         order.status = OrderStatus.FILLED
         order.filled_price = filled_price
         order.filled_quantity = order.quantity
         order.commission = commission
 
-        # 更新统计
+        # Update statistics
         self.total_commission_paid += commission
         self.total_slippage_cost += abs(filled_price - market_price) * order.quantity
 
@@ -364,16 +364,16 @@ class Portfolio:
         self, timestamp: pd.Timestamp, current_prices: Dict[str, float]
     ) -> None:
         """
-        更新投资组合价值记录
+        Update portfolio value history
 
         Args:
-            timestamp: 时间戳
-            current_prices: 当前价格
+            timestamp: Timestamp
+            current_prices: Current price
         """
         portfolio_value = self.get_portfolio_value(current_prices)
         self.portfolio_values.append((timestamp, portfolio_value))
 
-        # 更新最大回撤
+        # Update maximum drawdown
         if portfolio_value > self.peak_portfolio_value:
             self.peak_portfolio_value = portfolio_value
         else:
@@ -382,7 +382,7 @@ class Portfolio:
             ) / self.peak_portfolio_value
             self.max_drawdown = max(self.max_drawdown, current_drawdown)
 
-        # 计算日收益率
+        # Calculate daily returns
         if len(self.portfolio_values) > 1:
             prev_value = self.portfolio_values[-2][1]
             daily_return = (portfolio_value - prev_value) / prev_value
@@ -390,10 +390,10 @@ class Portfolio:
 
     def get_portfolio_summary(self) -> Dict[str, Any]:
         """
-        获取投资组合摘要
+        Get portfolio summary
 
         Returns:
-            投资组合摘要字典
+            Portfolio summary dictionary
         """
         if not self.portfolio_values:
             return {}

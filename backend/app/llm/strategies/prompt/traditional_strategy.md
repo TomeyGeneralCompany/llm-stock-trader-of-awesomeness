@@ -1,119 +1,121 @@
-# 傳統決策原則
+# Traditional decision principles
 
-## 有持倉時的策略
+Write all reasoning and expected outcomes in English. Keep JSON field names and enumerated values unchanged.
 
-- **consolidation(整理)趨勢**: 尋找合適出場點，在相對高點出場
-- **downtrend(下跌)趨勢**: 應該立即出場，避免進一步損失
-- **uptrend(上升)趨勢**: 可考慮繼續持倉或加倉
+## Strategy when holding a position
 
-## 空倉時的策略
+- **consolidation (sideways trend)**: Find a suitable exit point, Exit near relative highs
+- **downtrend**: Exit immediately, Avoid further losses
+- **uptrend**: Consider continuing to hold or adding to the position
 
-- **consolidation(整理)趨勢**: 謹慎觀望，等待明確方向突破
-- **downtrend(下跌)趨勢**: 不進場，等待趨勢反轉
-- **uptrend(上升)趨勢**: 可考慮進場，但需注意技術指標確認
+## Strategy when no position is held
 
-## 趨勢轉換特殊策略（🔥 最高優先級）
+- **consolidation (sideways trend)**: Wait cautiously, Wait for a clear directional breakout
+- **downtrend**: Do not enter, Wait for trend reversal
+- **uptrend**: Consider entry, but require technical indicator confirmation
 
-### 🚨 Consolidation(整理)階段轉換信號特別策略
+## Special trend transition strategy (🔥 Highest priority) 
 
-- **整理階段 + 任何轉換信號強度**: 
-  - ⏸️ **優先觀望等待**，因為trend analyzer已更加即時，整理階段的轉換信號可能是短期波動
-  - 🔍 **等待趨勢明確確立**：只有當主導趨勢明確轉為uptrend後再考慮進場
-  - 📊 **例外條件**：只有轉換信號強度 ≥ 5% 且動量狀態為strong_bullish時才考慮進場
+### 🚨 Special transition signals during consolidation
 
-### 🎯 明確趨勢轉換策略
+- **Consolidation phase + Any transition signal strength**: 
+  - ⏸️ **Prioritize waiting**, because trend analyzer is now more responsive, Transition signals during consolidation may reflect short-term fluctuations
+  - 🔍 **Wait for a clearly established trend**: Consider entry only after the dominant trend clearly changes to uptrend
+  - 📊 **Exception**: Consider entry only when transition signal strength is at least 5% and momentum is strong_bullish
 
-- **轉換信號強度 ≥ 3%** (非整理階段)：
-  - 向上轉換 → 🚀 **強烈建議進場**，但需確認趨勢不為強烈下跌
-  - 向下轉換 → 🛑 **立即出場**，避免重大損失
-- **轉換信號強度 2-3%** (非整理階段)：
-  - 向上轉換 → ✅ **積極考慮進場**，需多重技術指標確認
-  - 向下轉換 → ⚠️ **謹慎出場**，密切監控
-- **轉換信號強度 1-2%** (非整理階段)：
-  - 向上轉換 → 📊 **謹慎考慮進場**，避免逆勢操作
-  - 向下轉換 → 📉 **提高警惕**，準備出場
+### 🎯 Clear trend transition strategy
 
-## 🚫 嚴格避免進場條件
+- **Transition signal strength ≥ 3%** (Outside consolidation): 
+  - Upward transition → 🚀 **Strongly recommend entry**, but confirm that the trend is not strongly downward
+  - Downward transition → 🛑 **Exit immediately**, Avoid major losses
+- **Transition signal strength 2-3%** (Outside consolidation): 
+  - Upward transition → ✅ **Actively consider entry**, Requires confirmation from multiple technical indicators
+  - Downward transition → ⚠️ **Exit cautiously**, Monitor closely
+- **Transition signal strength 1-2%** (Outside consolidation): 
+  - Upward transition → 📊 **Consider entry cautiously**, Avoid countertrend trading
+  - Downward transition → 📉 **Increase vigilance**, Prepare to exit
 
-- **downtrend(下跌趨勢)**時，即使有MACD金叉也不進場
-- **downtrend + 趨勢一致性 < 0.5**：趨勢不明朗時避免搶反彈
-- **價格低於20日均線 + MACD為負 + downtrend**：三重技術面偏空時不進場
+## 🚫 Conditions that strictly prohibit entry
 
-## 技術指標確認策略
+- **downtrend**: Do not enter, even with a MACD bullish crossover
+- **downtrend + Trend consistency < 0.5**: Avoid chasing rebounds when the trend is unclear
+- **Price below 20-day moving average + MACD is negative + downtrend**: Do not enter when all three technical conditions are bearish
 
-- **多重確認進場**：需要至少2-3個技術指標同時支持
-- **MACD金叉 + uptrend + 價格高於關鍵均線**：理想進場組合
-- **避免單一指標進場**：僅憑MACD金叉不足以進場，需uptrend配合
+## Technical indicator confirmation strategy
 
-🎯 **重要原則**：寧可錯過機會，也不要在明顯downtrend環境中進場
+- **Multiple confirmations for entry**: Requires at least 2-3 technical indicators supporting entry simultaneously
+- **MACD Bullish crossover + uptrend + Price above key moving averages**: Ideal entry combination
+- **Avoid entry based on a single indicator**: A MACD bullish crossover alone is insufficient for entry; require uptrend confirmation
 
-## 共同原則（優先級排序）
+🎯 **Important principle**: Prefer missing an opportunity to entering during a clear downtrend
 
-1. **Consolidation謹慎原則** > 轉換信號（整理階段優先觀望，避免假突破）
-2. **明確趨勢轉換信號** > 一般趨勢判斷（非整理階段的轉換點是重要交易機會）
-3. **趨勢確立原則**：只在uptrend明確確立後才積極進場
-4. 技術指標作為進出場的輔助確認，但不應阻礙明確趨勢的轉換信號執行
-5. 結合股票特性選擇最佳策略
-6. 適度風險控制，避免在不確定性高的整理階段過度交易
+## Common principles (Priority order) 
 
-## 📚 轉換信號決策範例
+1. **Consolidation Caution principle** > Transition signal (Prioritize waiting during consolidation, Avoid false breakouts) 
+2. **Clear trend transition signal** > General trend assessment (Transition points outside consolidation are important trading opportunities) 
+3. **Established-trend principle**: Enter actively only after an uptrend is clearly established
+4. Use technical indicators as supporting entry and exit confirmation, but do not let them block clear trend transition signals
+5. Choose the best strategy based on stock characteristics
+6. Moderate risk control, Avoid excessive trading during uncertain consolidation phases
 
-- **情況A**: uptrend + 7.24%轉換信號 → ✅ **應該進場**（即使MACD暫時為負）
-- **情況B**: downtrend + 無轉換信號 → ❌ **不進場**（即使有技術反彈）
-- **情況C**: consolidation + 5%轉換信號 → ⏸️ **觀望等待**（整理階段優先觀望，除非≥5%且動量strong_bullish）
-- **情況D**: consolidation + 7%轉換信號 + strong_bullish → ✅ **可考慮進場**（滿足例外條件）
-- **情況E**: consolidation → uptrend確立 + 任何轉換信號 → ✅ **積極進場**（趨勢已明確）
+## 📚 Transition signal decision examples
 
-## ⚠️ 關鍵風險控制 - 必須遵守
+- **Scenario A**: uptrend + 7.24% transition signal → ✅ **Should enter** (Even if MACD temporarily negative) 
+- **Scenario B**: downtrend + No transition signal → ❌ **Do not enter** (Even with a technical rebound) 
+- **Scenario C**: consolidation + 5% transition signal → ⏸️ **Wait and observe** (Prioritize waiting during consolidation, unless signal strength is at least 5% and momentum is strong_bullish) 
+- **Scenario D**: consolidation + 7% transition signal + strong_bullish → ✅ **Consider entry** (Meets exception conditions) 
+- **Scenario E**: consolidation → uptrend Established + Any transition signal → ✅ **Enter actively** (Trend is clear) 
 
-### 1. 禁止在downtrend中搶反彈
+## ⚠️ Critical risk controls - Must follow
 
-- 當主導趨勢為downtrend且趨勢一致性 ≥ 0.8時，即使MACD金叉也不進場
-- 當趨勢一致性 < 0.5且為downtrend時，避免進場
+### 1. Do not chase rebounds in downtrend conditions
 
-### 2. 🔄 Consolidation階段特別風險控制
+- When the dominant trend is downtrend and trend consistency is at least 0.8, do not enter even with a MACD bullish crossover
+- When trend consistency is below 0.5 and the trend is downtrend, avoid entry
 
-- **prioritize觀望over進場**：整理階段優先觀望，因為trend analyzer已更即時，減少假突破風險
-- **高轉換信號門檻**：consolidation階段需要≥5%轉換信號強度且動量strong_bullish才考慮進場
-- **等待趨勢確立**：寧可等待consolidation→uptrend確立，也不要在整理階段急於進場
+### 2. 🔄 Consolidation special phase risk controls
 
-### 3. 多重技術指標確認原則
+- **Prioritize waiting over entry**: Prioritize waiting during consolidation, because trend analyzer is more responsive, Reduce false breakout risk
+- **High transition-signal threshold**: During consolidation, require transition signal strength of at least 5% and strong_bullish momentum before considering entry
+- **Wait for an established trend**: Prefer waiting for consolidation to become an established uptrend over entering prematurely
 
-- 單一MACD金叉不足以進場，需要配合uptrend
-- 理想進場：uptrend + MACD金叉 + 價格高於關鍵均線
-- 避免逆勢交易：主導趨勢為downtrend時不要僅憑技術指標進場
+### 3. Multiple technical confirmation principle
 
-### 4. 寧缺勿濫原則
+- A single MACD bullish crossover is insufficient for entry; require an uptrend
+- Ideal entry: uptrend + MACD Bullish crossover + Price above key moving averages
+- Avoid countertrend trading: When the dominant trend is downtrend, do not enter based solely on technical indicators
 
-- 當技術面矛盾時（如downtrend但有金叉），選擇觀望
-- 在consolidation階段，寧可錯過機會也不要冒假突破風險
-- 只在高勝率情況下進場，避免低勝率的搶反彈
+### 4. Quality-over-quantity principle
 
-## 🔒 持倉期間出場策略（避免過早出場）
+- When technical signals conflict (such as downtrend but with a bullish crossover) , Choose to wait
+- During consolidation phase, Prefer missing an opportunity over risking a false breakout
+- Enter only in high-win-probability conditions, Avoid low-probability rebound trades
 
-**注意：持倉期間的出場標準應比進場標準更加嚴格，避免頻繁交易損失利潤**
+## 🔒 Exit strategy while holding (Avoid premature exits) 
 
-### 多重確認出場原則
+**Note: Exit criteria while holding should be stricter than entry criteria, Avoid losing profit through frequent trading**
 
-- **單一MACD死叉不足以出場**：需要配合主導趨勢明確轉為downtrend
-- **理想出場條件**：downtrend + MACD死叉 + 價格跌破關鍵均線（如20日均線）
-- **強制出場條件**：主導趨勢轉為明確downtrend + 趨勢一致性≥0.6 + 多重技術指標確認
+### Multiple confirmations for exit
 
-### 持倉保護原則
+- **A single MACD bearish crossover is insufficient for exit**: Requires the dominant trend to clearly turn downtrend
+- **Ideal exit conditions**: downtrend + MACD Bearish crossover + Price breaks below key moving averages (such as 20-day moving average) 
+- **Mandatory exit conditions**: Dominant trend clearly changes to downtrend + Trend consistency≥0.6 + Multiple technical indicator confirmations
 
-- 在uptrend中，即使出現MACD死叉，優先考慮HOLD而非SELL
-- 只有當主導趨勢明確轉為downtrend且有多重確認時才考慮出場
-- 避免因短期技術指標調整而過早出場錯失後續漲幅
+### Position protection principles
 
-請基於以上原則做出決策，特別注意避免在downtrend環境中進場，以及避免在uptrend中過早出場。
+- During an uptrend, favor HOLD over SELL even if MACD produces a bearish crossover
+- Consider exit only when the dominant trend clearly changes to downtrend and multiple indicators confirm it
+- Avoid exiting prematurely due to short-term indicator adjustments and missing subsequent gains
 
-請以JSON格式回應你的決策：
+Make your decision based on the principles above. Pay particular attention to avoiding entries during downtrends and premature exits during uptrends.
+
+Return JSON with action BUY, SELL, or HOLD; confidence from 0.0 to 1.0; and risk_level low, medium, or high. Write reasoning and expected_outcome in English: 
 ```json
 {
-    "action": "BUY" | "SELL" | "HOLD",
-    "confidence": 0.0-1.0,
-    "reasoning": "詳細的決策理由",
-    "risk_level": "low" | "medium" | "high",
-    "expected_outcome": "預期結果描述"
+    "action": "HOLD",
+    "confidence": 0.0,
+    "reasoning": "Detailed decision reasoning",
+    "risk_level": "medium",
+    "expected_outcome": "Description of expected outcome"
 }
 ```

@@ -28,8 +28,8 @@ applyTo: '**/*.py'
 - **Code Comments & Documentation**: Must be written in **English** only
 - **Docstrings**: Must be written in **English** only
 - **Variable/Function Names**: Use **English** naming conventions
-- **LLM Prompts & Instructions**: Can use **Traditional Chinese (繁體中文)**
-- **Prohibited**: **Simplified Chinese (簡體中文)** is strictly forbidden throughout the entire project
+- **LLM Prompts & Instructions**: Must be written in **English**. Require model explanations and feedback in English.
+- **Interface, Logs & Documentation**: Use **English** throughout the project, including chart labels, tooltips, and error messages.
 
 ## Database Configuration
 

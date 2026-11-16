@@ -1,4 +1,4 @@
-// 基本交易類型
+// Basic trading types
 export interface TradingSignal {
   timestamp: string
   signal_type: 'BUY' | 'SELL' | 'HOLD'
@@ -8,7 +8,7 @@ export interface TradingSignal {
   metadata?: Record<string, any>
 }
 
-// 股票數據類型
+// Stock data types
 export interface StockData {
   timestamp: string
   open: number
@@ -16,7 +16,7 @@ export interface StockData {
   low: number
   close: number
   volume: number
-  // 技術指標
+  // Technical indicators
   ma_5?: number
   ma_10?: number
   ma_20?: number
@@ -24,18 +24,18 @@ export interface StockData {
   macd?: number
   macd_signal?: number
   macd_histogram?: number
-  // 布林帶指標
+  // Bollinger Band indicators
   bb_upper?: number
   bb_lower?: number
   bb_middle?: number
-  // 向前兼容
+  // Forward compatibility
   bollinger_upper?: number
   bollinger_lower?: number
 }
 
-// LLM 決策日誌
+// LLM Decision logs
 export interface LLMDecisionLog {
-  timestamp: string  // 時間戳
+  timestamp: string  // Timestamp
   decision: {
     action?: 'BUY' | 'SELL' | 'HOLD'
     confidence?: number
@@ -43,20 +43,20 @@ export interface LLMDecisionLog {
     risk_level?: 'low' | 'medium' | 'high'
     expected_outcome?: string
   }
-  reasoning: string  // 決策推理
+  reasoning: string  // Decision reasoning
   events: Array<{
     type: string
     description: string
     strength: 'low' | 'medium' | 'high'
   }>
-  action: string    // 行動類型 (如 "THINK")
+  action: string    // Action type (such as "THINK")
   confidence: number
   price: number
-  // 兼容舊格式
+  // Legacy format compatibility
   date?: string
 }
 
-// 回測結果類型
+// Backtest result types
 export interface BacktestResult {
   trades: any[]
   performance: any
@@ -74,7 +74,7 @@ export interface BacktestResult {
   }
 }
 
-// 技術事件類型
+// Technical event types
 export interface TechnicalEvent {
   type: string
   description: string
@@ -82,7 +82,7 @@ export interface TechnicalEvent {
   impact: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL'
 }
 
-// 趨勢分析類型
+// Trend analysis types
 export interface TrendAnalysis {
   primary_trend: 'BULLISH' | 'BEARISH' | 'SIDEWAYS'
   trend_strength: number
@@ -94,7 +94,7 @@ export interface TrendAnalysis {
   }
 }
 
-// 回顧性分析類型
+// Retrospective analysis types
 export interface RetrospectiveAnalysis {
   summary: string
   decision_quality: {
@@ -116,8 +116,8 @@ export interface RetrospectiveAnalysis {
   recommendations: string[]
 }
 
-// 日分析響應類型
-// 日分析響應類型（與後端API匹配）
+// Daily analysis response types
+// Daily analysis response types (With backend API match) 
 export interface DayAnalysisResponse {
   historical_data: {
     date: string

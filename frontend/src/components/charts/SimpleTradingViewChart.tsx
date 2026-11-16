@@ -5,33 +5,33 @@ import { createChart, Time } from 'lightweight-charts'
 import { StockData, TradingSignal, LLMDecisionLog } from '@/types'
 
 interface SimpleTradingViewChartProps {
-  /** 股票價格數據 */
+  /** Stock price data */
   stockData: StockData[]
-  /** 交易信號數據 */
+  /** Trading signal data */
   signals?: TradingSignal[]
-  /** LLM 決策記錄 */
+  /** LLM Decision recording */
   llmDecisions?: LLMDecisionLog[]
-  /** 圖表高度 */
+  /** Chart height */
   height?: number
-  /** 是否顯示成交量 */
+  /** Whether to display volume */
   showVolume?: boolean
-  /** 是否顯示交易信號 */
+  /** Whether to display trading signals */
   showSignals?: boolean
-  /** 是否顯示移動平均線 */
+  /** Whether to display moving averages */
   showMA?: boolean
-  /** 移動平均線週期 */
+  /** Moving-average period */
   maPeriods?: number[]
-  /** 是否顯示RSI */
+  /** Whether to display RSI */
   showRSI?: boolean
-  /** 是否顯示布林帶 */
+  /** Whether to display Bollinger Bands */
   showBB?: boolean
-  /** 是否顯示MACD */
+  /** Whether to display MACD */
   showMACD?: boolean
 }
 
 /**
- * 簡化版 TradingView Lightweight Charts 組件
- * 專注於K線圖表，避免複雜的型態問題
+ * Simplified version TradingView Lightweight Charts components
+ * focused on K candlestick chart, Avoid complex type issues
  */
 export function SimpleTradingViewChart({
   stockData,
@@ -48,7 +48,7 @@ export function SimpleTradingViewChart({
 }: SimpleTradingViewChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
 
-  // 在組件頂部添加數據驗證
+  // Add data validation at the top of the component
   const validStockData = React.useMemo(() => {
     if (!stockData || !Array.isArray(stockData)) {
       console.warn('Invalid stock data:', stockData)
@@ -56,7 +56,7 @@ export function SimpleTradingViewChart({
     }
     
     return stockData.filter(item => {
-      // 基本數據驗證
+      // Basic data validation
       if (!item || typeof item !== 'object') return false
       if (!item.timestamp) return false
       if (typeof item.open !== 'number' || isNaN(item.open) || !isFinite(item.open)) return false
@@ -65,7 +65,7 @@ export function SimpleTradingViewChart({
       if (typeof item.close !== 'number' || isNaN(item.close) || !isFinite(item.close)) return false
       if (typeof item.volume !== 'number' || isNaN(item.volume) || !isFinite(item.volume) || item.volume < 0) return false
       
-      // OHLC 邏輯驗證
+      // OHLC Logic validation
       if (item.high < item.low || item.high < item.open || item.high < item.close) return false
       if (item.low > item.open || item.low > item.close) return false
       
@@ -79,34 +79,34 @@ export function SimpleTradingViewChart({
     console.log('Sample valid data:', validStockData[0])
   }
 
-  // 統一的時間轉換函數
+  // Unified time conversion function
   const convertTimestamp = (timestamp: string): number => {
-    // 處理不同的時間格式
+    // Handle different time formats
     let date: Date
     
     if (timestamp.includes('T')) {
-      // ISO 格式: "2024-01-15T00:00:00" 或 "2024-01-15T00:00:00.000Z"
+      // ISO format: "2024-01-15T00:00:00" or "2024-01-15T00:00:00.000Z"
       date = new Date(timestamp)
     } else if (timestamp.includes('-')) {
-      // 日期格式: "2024-01-15"
+      // Date format: "2024-01-15"
       date = new Date(timestamp + 'T00:00:00.000Z')
     } else {
-      // 其他格式，嘗試直接解析
+      // Other formats, Try parsing directly
       date = new Date(timestamp)
     }
     
-    // 確保日期有效
+    // Ensure date is valid
     if (isNaN(date.getTime())) {
-      console.warn('無效的時間格式:', timestamp)
+      console.warn('Invalid time format:', timestamp)
       return Math.floor(Date.now() / 1000)
     }
     
-    // 轉換為 TradingView 所需的 Unix 時間戳（秒）
+    // Convert to TradingView required Unix Timestamp (seconds) 
     const unixTimestamp = Math.floor(date.getTime() / 1000)
     
-    // 添加調試信息（只在開發環境）
+    // Add debug information (Only in development) 
     if (process.env.NODE_ENV === 'development') {
-      console.log(`時間轉換: ${timestamp} -> ${date.toISOString()} -> ${unixTimestamp}`)
+      console.log(`Time conversion: ${timestamp} -> ${date.toISOString()} -> ${unixTimestamp}`)
     }
     
     return unixTimestamp
@@ -120,24 +120,24 @@ export function SimpleTradingViewChart({
 
     console.log('Creating chart with', validStockData.length, 'data points')
 
-    // 計算所需的圖表高度分配
+    // Calculate chart height allocation
     let mainChartHeight = height
     let subChartsCount = 0
     if (showRSI) subChartsCount++
     if (showMACD) subChartsCount++
     
-    // 如果有子圖表，主圖佔70%，子圖表平分剩餘空間
+    // If subcharts exist, Main chart occupies 70%, Subcharts split the remaining space equally
     if (subChartsCount > 0) {
       mainChartHeight = Math.floor(height * 0.7)
     }
 
-    // 創建主圖表容器
+    // Create main chart container
     const mainChartContainer = document.createElement('div')
     mainChartContainer.style.height = `${mainChartHeight}px`
     chartContainerRef.current.innerHTML = ''
     chartContainerRef.current.appendChild(mainChartContainer)
 
-    // 創建主圖表
+    // Create main chart
     const chart = createChart(mainChartContainer, {
       width: chartContainerRef.current.clientWidth,
       height: mainChartHeight,
@@ -159,7 +159,7 @@ export function SimpleTradingViewChart({
       },
     })
 
-    // 轉換數據格式 - 使用統一的時間轉換並過濾無效數據
+    // Convert data format - Use unified time conversion and filter invalid data
     const candlestickData = validStockData.map(stock => ({
       time: convertTimestamp(stock.timestamp) as Time,
       open: stock.open,
@@ -170,7 +170,7 @@ export function SimpleTradingViewChart({
 
     console.log('Candlestick data sample:', candlestickData.slice(0, 2))
 
-    // 添加蠟燭圖系列
+    // Add candlestick series
     const candlestickSeries = chart.addCandlestickSeries({
       upColor: '#26a69a',
       downColor: '#ef5350',
@@ -182,7 +182,7 @@ export function SimpleTradingViewChart({
 
     candlestickSeries.setData(candlestickData)
 
-    // 添加移動平均線
+    // Add moving averages
     if (showMA && maPeriods.length > 0) {
       const colors = ['#2196F3', '#FF9800', '#4CAF50', '#9C27B0']
       maPeriods.forEach((period, index) => {
@@ -210,9 +210,9 @@ export function SimpleTradingViewChart({
       })
     }
 
-    // 添加布林帶（放在主圖表）
+    // Add Bollinger Bands (Place on main chart) 
     if (showBB) {
-      // 上軌
+      // Upper band
       const bbUpperData = validStockData
         .filter(stock => {
           const value = stock.bb_upper
@@ -235,7 +235,7 @@ export function SimpleTradingViewChart({
         bbUpperSeries.setData(bbUpperData)
       }
 
-      // 下軌
+      // Lower band
       const bbLowerData = validStockData
         .filter(stock => {
           const value = stock.bb_lower
@@ -256,7 +256,7 @@ export function SimpleTradingViewChart({
         bbLowerSeries.setData(bbLowerData)
       }
 
-      // 中軌
+      // Middle band
       const bbMiddleData = stockData
         .filter(stock => {
           const value = stock.bb_middle
@@ -277,7 +277,7 @@ export function SimpleTradingViewChart({
       }
     }
 
-    // 添加成交量系列（放在主圖表底部）
+    // Add volume series (Place at bottom of main chart) 
     if (showVolume) {
       const volumeData = validStockData.map(stock => ({
         time: convertTimestamp(stock.timestamp) as Time,
@@ -296,7 +296,7 @@ export function SimpleTradingViewChart({
         
         volumeSeries.setData(volumeData)
 
-        // 設置成交量的價格比例（放在底部）
+        // Configure volume price scale (Place at bottom) 
         chart.priceScale('volume').applyOptions({
           scaleMargins: {
             top: 0.7,
@@ -306,36 +306,36 @@ export function SimpleTradingViewChart({
       }
     }
 
-    // 添加交易信號標記
+    // Add trading signal markers
     if (showSignals && signals.length > 0) {
       const markers = signals.map(signal => ({
         time: convertTimestamp(signal.timestamp) as Time,
         position: (signal.signal_type === 'BUY' ? 'belowBar' : 'aboveBar') as 'belowBar' | 'aboveBar',
         color: signal.signal_type === 'BUY' ? '#26a69a' : '#ef5350',
         shape: (signal.signal_type === 'BUY' ? 'arrowUp' : 'arrowDown') as 'arrowUp' | 'arrowDown',
-        text: signal.signal_type === 'BUY' ? '買入' : '賣出',
-        size: 2, // 調整箭頭大小 (預設是1，範圍0-4)
+        text: signal.signal_type === 'BUY' ? 'Buy' : 'Sell',
+        size: 2, // Adjust arrow size (Default is 1, Range 0-4)
       }))
       
       try {
         candlestickSeries.setMarkers(markers)
       } catch (error) {
-        console.warn('設置標記時出錯:', error)
+        console.warn('Error setting markers:', error)
       }
     }
 
-    // 自動適應主圖表視圖
+    // Automatically fit main chart view
     chart.timeScale().fitContent()
 
-    // 儲存圖表實例用於清理
+    // Store chart instances for cleanup
     const charts = [chart]
 
-    // 時間軸同步控制 - 防止無限循環
+    // Time axis synchronization control - Prevent infinite loops
     let isSyncing = false
 
-    // 時間軸同步 - 當主圖表時間範圍變化時，同步所有子圖表
+    // Time axis synchronization - When main chart time range changes, Synchronize all subcharts
     const syncTimeRange = (timeRange: any, sourceChart?: any) => {
-      if (!timeRange || isSyncing) return // 檢查空值和同步狀態
+      if (!timeRange || isSyncing) return // Check null values and synchronization state
       
       isSyncing = true
       
@@ -344,23 +344,23 @@ export function SimpleTradingViewChart({
           try {
             chartInstance.timeScale().setVisibleRange(timeRange)
           } catch (error) {
-            console.warn('時間軸同步失敗:', error)
+            console.warn('Time axis synchronization failed:', error)
           }
         }
       })
       
-      // 延遲重置同步狀態，避免立即觸發
+      // Reset synchronization state after a delay, Avoid immediate triggering
       setTimeout(() => {
         isSyncing = false
       }, 50)
     }
 
-    // 監聽主圖表的時間軸變化
+    // Listen for main chart time axis changes
     chart.timeScale().subscribeVisibleTimeRangeChange((timeRange) => {
       syncTimeRange(timeRange, chart)
     })
 
-    // 創建 RSI 子圖表
+    // Create RSI Subchart
     let rsiChart: any = null
     if (showRSI) {
       const rsiChartHeight = Math.floor((height - mainChartHeight) / subChartsCount)
@@ -412,7 +412,7 @@ export function SimpleTradingViewChart({
         })
         rsiSeries.setData(rsiData)
 
-        // 添加 RSI 的 30 和 70 參考線
+        // Add RSI of 30 and 70 reference lines
         const rsiRef30 = rsiChart.addLineSeries({
           color: '#FF5722',
           lineWidth: 1,
@@ -432,7 +432,7 @@ export function SimpleTradingViewChart({
         rsiRef30.setData(ref30Data)
         rsiRef70.setData(ref70Data)
 
-        // 設置 RSI 圖表的價格範圍
+        // Set RSI chart price range
         rsiChart.priceScale().applyOptions({
           scaleMargins: {
             top: 0.1,
@@ -444,13 +444,13 @@ export function SimpleTradingViewChart({
       rsiChart.timeScale().fitContent()
       charts.push(rsiChart)
 
-      // 為 RSI 圖表添加反向時間軸同步
+      // When set to RSI Add reverse time axis synchronization to chart
       rsiChart.timeScale().subscribeVisibleTimeRangeChange((timeRange: any) => {
         syncTimeRange(timeRange, rsiChart)
       })
     }
 
-    // 創建 MACD 子圖表
+    // Create MACD Subchart
     let macdChart: any = null
     if (showMACD) {
       const macdChartHeight = Math.floor((height - mainChartHeight) / subChartsCount)
@@ -519,7 +519,7 @@ export function SimpleTradingViewChart({
         }))
 
       if (macdData.length > 0) {
-        // MACD 線
+        // MACD line
         const macdSeries = macdChart.addLineSeries({
           color: '#2196F3',
           lineWidth: 2,
@@ -527,7 +527,7 @@ export function SimpleTradingViewChart({
         })
         macdSeries.setData(macdData)
 
-        // Signal 線
+        // Signal line
         if (macdSignalData.length > 0) {
           const macdSignalSeries = macdChart.addLineSeries({
             color: '#FF9800',
@@ -537,7 +537,7 @@ export function SimpleTradingViewChart({
           macdSignalSeries.setData(macdSignalData)
         }
 
-        // MACD 柱狀圖
+        // MACD Histogram
         if (macdHistogramData.length > 0) {
           const macdHistogramSeries = macdChart.addHistogramSeries({
             color: '#26a69a',
@@ -550,7 +550,7 @@ export function SimpleTradingViewChart({
           macdHistogramSeries.setData(macdHistogramData)
         }
 
-        // 添加零軸參考線
+        // Add zero reference line
         const zeroLineData = macdData.map(item => ({ time: item.time, value: 0 }))
         const zeroLineSeries = macdChart.addLineSeries({
           color: '#666666',
@@ -564,13 +564,13 @@ export function SimpleTradingViewChart({
       macdChart.timeScale().fitContent()
       charts.push(macdChart)
 
-      // 為 MACD 圖表添加反向時間軸同步
+      // When set to MACD Add reverse time axis synchronization to chart
       macdChart.timeScale().subscribeVisibleTimeRangeChange((timeRange: any) => {
         syncTimeRange(timeRange, macdChart)
       })
     }
 
-    // 響應式調整 - 為所有圖表設置
+    // Responsive resizing - For all charts, set
     const handleResize = () => {
       if (chartContainerRef.current) {
         charts.forEach(chartInstance => {
@@ -587,7 +587,7 @@ export function SimpleTradingViewChart({
 
     return () => {
       window.removeEventListener('resize', handleResize)
-      // 清理所有圖表實例
+      // Clean up all chart instances
       charts.forEach(chartInstance => {
         if (chartInstance) {
           chartInstance.remove()
@@ -604,20 +604,20 @@ export function SimpleTradingViewChart({
         style={{ height: `${height}px` }}
       />
       
-      {/* 圖例 */}
+      {/* Legend */}
       <div className="flex flex-wrap justify-center mt-4 space-x-4 text-sm">
-        {/* 主圖指標 */}
+        {/* Main chart indicators */}
         <div className="flex items-center space-x-2">
           <div className="flex space-x-1">
             <div className="w-2 h-4 bg-green-600"></div>
             <div className="w-2 h-4 bg-red-500"></div>
           </div>
-          <span>K線圖</span>
+          <span>K Candlestick chart</span>
         </div>
         {showVolume && (
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-gray-400 rounded"></div>
-            <span>成交量</span>
+            <span>Volume</span>
           </div>
         )}
         {showMA && maPeriods.map((period, index) => {
@@ -638,15 +638,15 @@ export function SimpleTradingViewChart({
               <div className="w-2 h-1 bg-red-600"></div>
               <div className="w-2 h-1 bg-yellow-500"></div>
             </div>
-            <span>布林帶</span>
+            <span>Bollinger Bands</span>
           </div>
         )}
         
-        {/* 子圖指標 */}
+        {/* Subchart indicators */}
         {showRSI && (
           <div className="flex items-center space-x-2">
             <div className="w-3 h-1 bg-purple-600"></div>
-            <span>RSI (子圖)</span>
+            <span>RSI (Subchart)</span>
           </div>
         )}
         {showMACD && (
@@ -656,7 +656,7 @@ export function SimpleTradingViewChart({
               <div className="w-2 h-1 bg-orange-500"></div>
               <div className="w-2 h-2 bg-green-600"></div>
             </div>
-            <span>MACD (子圖)</span>
+            <span>MACD (Subchart)</span>
           </div>
         )}
         
@@ -664,11 +664,11 @@ export function SimpleTradingViewChart({
           <>
             <div className="flex items-center space-x-2">
               <span className="text-green-600 text-lg font-bold">▲</span>
-              <span className="font-medium">買入信號</span>
+              <span className="font-medium">Buy signal</span>
             </div>
             <div className="flex items-center space-x-2">
               <span className="text-red-500 text-lg font-bold">▼</span>
-              <span className="font-medium">賣出信號</span>
+              <span className="font-medium">Sell signal</span>
             </div>
           </>
         )}

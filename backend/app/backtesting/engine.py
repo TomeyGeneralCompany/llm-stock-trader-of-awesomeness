@@ -1,9 +1,9 @@
 """
-自建回測引擎模組
+Custom backtesting engine module
 
-自建的回測引擎，提供透明、易懂的交易邏輯
-符合一般投資人的交易習慣和理解方式
-設計為LLM友好的工具，提供簡潔的API介面
+Custom backtesting engine, Provides transparent, and understandable trading logic
+Matches typical investors’ trading practices and understanding
+Designed as an LLM accessible tool, Provides a concise API interface
 """
 
 import logging
@@ -31,49 +31,49 @@ logger = logging.getLogger(__name__)
 
 
 class TradingMode(Enum):
-    """交易模式列舉"""
+    """Trading mode enumeration"""
 
-    LONG_ONLY = "long_only"  # 只做多
-    SHORT_ONLY = "short_only"  # 只做空
-    LONG_SHORT = "long_short"  # 多空自由
+    LONG_ONLY = "long_only"  # Long only
+    SHORT_ONLY = "short_only"  # Short only
+    LONG_SHORT = "long_short"  # Long and short
 
 
 class OrderType(Enum):
-    """訂單類型列舉"""
+    """Order type enumeration"""
 
     BUY = "buy"
     SELL = "sell"
 
 
 class TradeStatus(Enum):
-    """交易狀態列舉"""
+    """Trade status enumeration"""
 
-    PENDING = "pending"  # 待執行
-    EXECUTED = "executed"  # 已執行
-    CANCELLED = "cancelled"  # 已取消
-    FAILED = "failed"  # 執行失敗
+    PENDING = "pending"  # Pending
+    EXECUTED = "executed"  # Executed
+    CANCELLED = "cancelled"  # Cancelled
+    FAILED = "failed"  # Execution failed
 
 
 @dataclass
 class Trade:
     """
-    交易記錄 - 記錄單筆交易的完整資訊
+    Trade record - Records complete information for a single trade
     """
 
-    trade_id: str  # 交易編號
-    timestamp: datetime  # 交易時間
-    symbol: str  # 股票代碼
-    order_type: OrderType  # 買入或賣出
-    shares: int  # 交易股數
-    price: float  # 交易價格
-    commission: float  # 手續費
-    total_cost: float  # 總成本（含手續費）
-    status: TradeStatus  # 交易狀態
-    signal_confidence: float = 0.0  # 信號強度
-    reason: str = ""  # 交易原因
+    trade_id: str  # Trade ID
+    timestamp: datetime  # Trade time
+    symbol: str  # Stock symbol
+    order_type: OrderType  # Buy or sell
+    shares: int  # Shares traded
+    price: float  # Trade price
+    commission: float  # Commission
+    total_cost: float  # Total cost (including commission) 
+    status: TradeStatus  # Trade status
+    signal_confidence: float = 0.0  # Signal strength
+    reason: str = ""  # Trade reason
 
     def to_dict(self) -> Dict[str, Any]:
-        """轉換為字典格式，確保所有值都是 JSON 可序列化的"""
+        """Convert to dictionary format, Ensure all values are JSON serializable"""
         return {
             "trade_id": str(self.trade_id),
             "timestamp": self.timestamp.isoformat()
@@ -96,29 +96,29 @@ class Trade:
 @dataclass
 class Portfolio:
     """
-    投資組合狀態 - 追蹤現金和持股狀況
+    Portfolio state - Track cash and share holdings
     """
 
-    cash: float = 0.0  # 現金餘額
-    positions: Dict[str, int] = None  # 持股數量 {股票代碼: 股數}
+    cash: float = 0.0  # Cash balance
+    positions: Dict[str, int] = None  # Shares held {Stock symbol: Shares}
 
     def __post_init__(self):
         if self.positions is None:
             self.positions = {}
 
     def get_position(self, symbol: str) -> int:
-        """取得特定股票的持股數量"""
+        """Get shares held for a specific stock"""
         return self.positions.get(symbol, 0)
 
     def update_position(self, symbol: str, shares: int) -> None:
-        """更新持股數量"""
+        """Update share holdings"""
         if shares == 0:
             self.positions.pop(symbol, None)
         else:
             self.positions[symbol] = shares
 
     def calculate_total_value(self, prices: Dict[str, float]) -> float:
-        """計算投資組合總價值（現金 + 持股市值）"""
+        """Calculate total portfolio value (Cash + Market value of holdings) """
         stock_value = sum(
             shares * prices.get(symbol, 0.0)
             for symbol, shares in self.positions.items()
@@ -126,32 +126,32 @@ class Portfolio:
         return self.cash + stock_value
 
     def to_dict(self) -> Dict[str, Any]:
-        """轉換為字典格式，適合LLM處理"""
+        """Convert to dictionary format, Suitable for LLM processing"""
         return {"cash": self.cash, "positions": self.positions.copy()}
 
 
 @dataclass
 class BacktestConfig:
     """
-    回測設定類別 - 簡化且LLM友好的設計
-    移除了保證金倍數和最大倉位比例的概念
-    改為一般投資人容易理解的最大持股數量
+    Backtest configuration class - Simplified and LLM accessible design
+    Removes margin multipliers and maximum position allocation concepts
+    Uses maximum share quantities familiar to ordinary investors instead
     """
 
-    initial_capital: float = 1000000.0  # 初始資金
-    max_shares_per_trade: int = 1000  # 每次最大買入股數
-    trading_mode: TradingMode = TradingMode.LONG_ONLY  # 交易模式
-    trade_on_open: bool = False  # 是否在開盤價交易（False=收盤價）
-    commission_rate: float = 0.001425  # 手續費率（台股約0.1425%）
-    min_commission: float = 20.0  # 最低手續費（台股20元）
+    initial_capital: float = 1000000.0  # Initial capital
+    max_shares_per_trade: int = 1000  # Maximum shares per buy
+    trading_mode: TradingMode = TradingMode.LONG_ONLY  # Trading mode
+    trade_on_open: bool = False  # Whether to trade at the opening price (False=Closing price) 
+    commission_rate: float = 0.001425  # Commission rate (Approximately for Taiwan stocks 0.1425%) 
+    min_commission: float = 20.0  # Minimum commission (Taiwan stocks 20 currency units) 
 
     def calculate_commission(self, trade_value: float) -> float:
-        """計算手續費"""
+        """Calculate commission"""
         commission = trade_value * self.commission_rate
         return max(commission, self.min_commission)
 
     def to_dict(self) -> Dict[str, Any]:
-        """轉換為字典格式，方便LLM處理"""
+        """Convert to dictionary format, Convenient for LLM processing"""
         return {
             "initial_capital": self.initial_capital,
             "max_shares_per_trade": self.max_shares_per_trade,
@@ -163,7 +163,7 @@ class BacktestConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BacktestConfig":
-        """從字典建立設定，方便LLM呼叫"""
+        """Create configuration from a dictionary, Convenient for LLM calls"""
         config_data = data.copy()
         if "trading_mode" in config_data:
             config_data["trading_mode"] = TradingMode(config_data["trading_mode"])
@@ -172,38 +172,38 @@ class BacktestConfig:
 
 class CustomBacktestEngine:
     """
-    自建回測引擎 - 簡潔、透明的交易邏輯
+    Custom backtest engine - Concise, and transparent trading logic
 
-    專為一般投資人設計，避免複雜的保證金和倉位概念
-    提供清晰的現金流管理和持股追蹤
-    適合LLM工具調用的簡潔API
+    Designed for ordinary investors, Avoids complex margin and position allocation concepts
+    Provides clear cash flow management and share tracking
+    Suitable for LLM Concise interface for tool calls API
     """
 
     def __init__(self, config: BacktestConfig = None):
         """
-        初始化回測引擎
+        Initialize backtest engine
 
         Args:
-            config: 回測設定，為None時使用預設設定
+            config: Backtest settings, When set to None use default settings
         """
         self.config = config or BacktestConfig()
         self.strategies: Dict[str, TradingStrategy] = {}
         self.data_cache: Dict[str, pd.DataFrame] = {}
 
-        # 回測狀態
+        # Backtest state
         self.is_running = False
         self.current_results: Dict[str, Any] = {}
 
     def add_strategy(self, name: str, strategy: TradingStrategy) -> None:
         """
-        新增策略
+        Add strategy
 
         Args:
-            name: 策略名稱
-            strategy: 策略物件
+            name: Strategy name
+            strategy: Strategy object
         """
         self.strategies[name] = strategy
-        logger.info(f"新增策略: {name}")
+        logger.info(f"Add strategy: {name}")
 
     def load_data(
         self,
@@ -213,68 +213,68 @@ class CustomBacktestEngine:
         end_date: Optional[str] = None,
     ) -> pd.DataFrame:
         """
-        載入回測數據
+        Load backtest data
 
         Args:
-            symbol: 股票代碼
-            period: 數據週期（1y, 6mo, 3mo等）
-            start_date: 開始日期 (可選)
-            end_date: 結束日期 (可選)
+            symbol: Stock symbol
+            period: Data period (1y, 6mo, 3mo etc.) 
+            start_date: Start date (Optional)
+            end_date: End date (Optional)
 
         Returns:
-            處理後的股票數據
+            Processed stock data
         """
-        logger.info(f"載入 {symbol} 數據，週期: {period}")
+        logger.info(f"Load {symbol} Data, Period: {period}")
 
         try:
-            # 獲取數據
+            # Fetch data
             data = StockDataFetcher.fetch_stock_data(symbol, period)
 
             if data is None or data.empty:
-                raise ValueError(f"無法取得 {symbol} 的數據")
+                raise ValueError(f"Unable to retrieve {symbol} data")
 
-            # 標準化欄位名稱
+            # Normalize column names
             data.columns = data.columns.str.lower()
 
-            # 根據分析期間篩選數據
+            # Filter data by analysis period
             if hasattr(data, "attrs") and "analysis_start_date" in data.attrs:
                 analysis_start = pd.to_datetime(data.attrs["analysis_start_date"])
 
-                # 處理時區相容性問題
+                # Handle timezone compatibility
                 if data.index.tz is not None and analysis_start.tz is None:
                     analysis_start = analysis_start.tz_localize(data.index.tz)
                 elif data.index.tz is None and analysis_start.tz is not None:
                     analysis_start = analysis_start.tz_localize(None)
 
                 logger.info(
-                    f"篩選數據至分析期間: 從 {analysis_start.date()} 到 {data.index.max().date()}"
+                    f"Filter data to the analysis period: from {analysis_start.date()} to {data.index.max().date()}"
                 )
                 data = data[analysis_start:]
 
-            # 如果另外指定了日期範圍，進行額外篩選
+            # If an additional date range was specified, apply additional filtering
             if start_date and end_date:
                 start = pd.to_datetime(start_date)
                 end = pd.to_datetime(end_date)
                 data = data[start:end]
 
-            # 確保數據類型正確
+            # Ensure correct data types
             for col in ["open", "high", "low", "close", "volume"]:
                 if col in data.columns:
                     data[col] = pd.to_numeric(data[col], errors="coerce")
 
-            # 移除空值
+            # Remove null values
             data = data.dropna()
 
-            # 快取數據
+            # Cache data
             self.data_cache[symbol] = data
 
-            logger.info(f"載入 {len(data)} 筆 {symbol} 數據")
-            logger.info(f"日期範圍: {data.index[0]} 到 {data.index[-1]}")
+            logger.info(f"Load {len(data)} records {symbol} Data")
+            logger.info(f"Date range: {data.index[0]} to {data.index[-1]}")
 
             return data
 
         except Exception as e:
-            logger.error(f"載入 {symbol} 數據時發生錯誤: {e}")
+            logger.error(f"Load {symbol} error while processing data: {e}")
             raise
 
     def run_backtest(
@@ -286,52 +286,52 @@ class CustomBacktestEngine:
         symbol: str = None,
     ) -> Dict[str, Any]:
         """
-        執行回測 - 自建引擎的核心方法
+        Run backtest - Core method of the custom engine
 
         Args:
-            stock_data: 股票數據DataFrame
-            strategy: 策略物件 (可以是單一策略或組合策略)
-            initial_cash: 初始資金
-            transaction_cost: 交易成本比例
-            symbol: 股票代碼
+            stock_data: Stock data DataFrame
+            strategy: Strategy object (May be a single or combined strategy)
+            initial_cash: Initial capital
+            transaction_cost: Transaction cost rate
+            symbol: Stock symbol
 
         Returns:
-            回測結果字典
+            Backtest results dictionary
         """
         self.is_running = True
 
         try:
-            # 確定策略名稱
+            # Determine strategy name
             strategy_name = getattr(strategy, "name", type(strategy).__name__)
 
-            logger.info(f"開始回測，使用策略 {strategy_name}")
+            logger.info(f"Start backtest, Use strategy {strategy_name}")
 
-            # 1. 初始化投資組合狀態
+            # 1. Initialize portfolio state
             portfolio = Portfolio(cash=initial_cash)
 
-            # 2. 計算技術指標
+            # 2. Calculate technical indicators
             enhanced_data = self._prepare_technical_indicators(stock_data.copy())
 
-            # 3. 生成交易信號
-            # 設置當前股票代碼到策略中，供 Enhanced 趨勢分析使用
+            # 3. Generate trading signals
+            # Set the current stock symbol on the strategy, for Enhanced trend analysis
             if hasattr(strategy, "set_current_symbol"):
                 strategy.set_current_symbol(symbol or "UNKNOWN")
             elif hasattr(strategy, "current_symbol"):
                 strategy.current_symbol = symbol or "UNKNOWN"
 
-            # 設置策略的初始資金，確保與 portfolio 一致
+            # Set the strategy’s initial capital, Ensure consistency with portfolio consistent
             if hasattr(strategy, "cash") and hasattr(strategy, "initial_capital"):
                 strategy.initial_capital = initial_cash
                 strategy.cash = initial_cash
                 strategy.current_portfolio_value = initial_cash
                 strategy.max_portfolio_value = initial_cash
-                print(f"💰 設置策略初始資金: ${initial_cash:,.0f}")
+                print(f"💰 Set initial strategy capital: ${initial_cash:,.0f}")
 
             signals = strategy.generate_signals(enhanced_data)
 
-            logger.info(f"生成了 {len(signals)} 個交易信號")
+            logger.info(f"Generated {len(signals)} trading signals")
 
-            # 4. 執行交易模擬
+            # 4. Run trading simulation
             trades, portfolio_history = self._simulate_trading(
                 signals,
                 enhanced_data,
@@ -341,24 +341,24 @@ class CustomBacktestEngine:
                 initial_cash=initial_cash,
             )
 
-            # 4.5. 回測結束處理 - 強制結算持倉
+            # 4.5. Backtest finalization - Force settlement of positions
             final_date = enhanced_data.index[-1]
             final_price = float(enhanced_data.iloc[-1]["close"])
 
-            # 如果策略有 finalize_backtest 方法，則調用它
+            # If the strategy has a finalize_backtest method, call it
             if hasattr(strategy, "finalize_backtest"):
                 try:
                     strategy.finalize_backtest(final_price, final_date)
-                    logger.info(f"策略 {strategy_name} 已執行回測結束處理")
+                    logger.info(f"Strategy {strategy_name} Backtest finalization completed")
                 except Exception as e:
-                    logger.warning(f"策略 {strategy_name} 回測結束處理失敗: {e}")
+                    logger.warning(f"Strategy {strategy_name} Backtest finalization failed: {e}")
 
-            # 如果投資組合還有持倉，強制結算
+            # If the portfolio still has positions, force settlement
             current_position = portfolio.get_position(symbol or "UNKNOWN")
             if current_position > 0:
-                logger.info(f"檢測到未結算持倉 {current_position} 股，強制結算")
+                logger.info(f"Detected unsettled position {current_position} shares, force settlement")
 
-                # 創建強制結算交易
+                # Create forced settlement trade
                 final_trade = Trade(
                     trade_id=f"FINAL_{len(trades)}",
                     timestamp=final_date,
@@ -366,19 +366,19 @@ class CustomBacktestEngine:
                     order_type=OrderType.SELL,
                     shares=current_position,
                     price=final_price,
-                    commission=0.0,  # 回測結束不收手續費
+                    commission=0.0,  # No commission charged at backtest end
                     total_cost=current_position * final_price,
                     status=TradeStatus.EXECUTED,
                     signal_confidence=1.0,
-                    reason="回測結束強制結算",
+                    reason="Forced settlement at backtest end",
                 )
 
-                # 執行強制結算
+                # Execute forced settlement
                 portfolio.cash += current_position * final_price
-                portfolio.update_position(symbol or "UNKNOWN", 0)  # 清空持倉
+                portfolio.update_position(symbol or "UNKNOWN", 0)  # Clear position
                 trades.append(final_trade)
 
-                # 更新投資組合歷史的最後一筆記錄
+                # Update the final portfolio history record
                 if portfolio_history:
                     portfolio_history[-1].update(
                         {
@@ -392,10 +392,10 @@ class CustomBacktestEngine:
                     )
 
                 logger.info(
-                    f"強制結算完成: 售出 {current_position} 股，價格 ${final_price:.2f}"
+                    f"Forced settlement completed: Sold {current_position} shares, Price ${final_price:.2f}"
                 )
 
-            # 5. 計算績效指標
+            # 5. Calculate performance metrics
             results = self._calculate_performance_metrics(
                 portfolio_history,
                 enhanced_data,
@@ -403,35 +403,35 @@ class CustomBacktestEngine:
                 signals,
                 symbol=symbol or "UNKNOWN",
                 strategy_name=strategy_name,
-                strategy=strategy,  # 傳遞策略對象
+                strategy=strategy,  # Pass strategy object
                 initial_cash=initial_cash,
             )
 
-            # 6. 儲存結果
+            # 6. Store results
             self.current_results[
                 f"{strategy_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             ] = results
 
-            logger.info(f"回測完成: {strategy_name}")
+            logger.info(f"Backtest completed: {strategy_name}")
             return results
 
         except Exception as e:
-            logger.error(f"回測失敗: {e}")
+            logger.error(f"Backtest failed: {e}")
             raise
         finally:
             self.is_running = False
 
     def _prepare_technical_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """
-        準備技術指標數據
+        Prepare technical indicator data
 
         Args:
-            data: 原始股價數據
+            data: Raw stock price data
 
         Returns:
-            包含技術指標的數據
+            Data containing technical indicators
         """
-        # 計算各種技術指標
+        # Calculate technical indicators
         if "5ma" not in data.columns:
             data = calculate_moving_averages(data)
         if "bb_upper" not in data.columns:
@@ -453,22 +453,22 @@ class CustomBacktestEngine:
         initial_cash: float = 10000.0,
     ) -> Tuple[List[Trade], List[Dict[str, Any]]]:
         """
-        模擬交易執行 - 核心交易邏輯
+        Simulate trade execution - Core trading logic
 
         Args:
-            signals: 交易信號列表
-            data: 股價數據
-            portfolio: 投資組合狀態
-            symbol: 股票代碼
+            signals: List of trading signals
+            data: Stock price data
+            portfolio: Portfolio state
+            symbol: Stock symbol
 
         Returns:
-            (交易記錄列表, 投資組合歷史)
+            (List of trade records, Portfolio history)
         """
         trades = []
         portfolio_history = []
         trade_counter = 0
 
-        # 建立信號查找表
+        # Build signal lookup table
         signal_dict = {}
         for signal in signals:
             date_key = signal.timestamp.date()
@@ -476,15 +476,15 @@ class CustomBacktestEngine:
                 signal_dict[date_key] = []
             signal_dict[date_key].append(signal)
 
-        # 逐日模擬交易
+        # Simulate trading day by day
         for date, row in data.iterrows():
             current_date = date.date() if hasattr(date, "date") else date
             current_price = float(row["close"])
 
-            # 檢查當日是否有信號
+            # Check for signals on the current day
             daily_signals = signal_dict.get(current_date, [])
 
-            # 處理交易信號
+            # Process trading signals
             for signal in daily_signals:
                 if signal.signal_type == SignalType.BUY:
                     trade = self._execute_buy_order(
@@ -512,22 +512,22 @@ class CustomBacktestEngine:
                         trades.append(trade)
                         trade_counter += 1
 
-            # 記錄當日投資組合狀態
+            # Record daily portfolio state
             current_position = portfolio.get_position(symbol)
             stock_value = current_position * current_price
             total_value = portfolio.cash + stock_value
 
-            # 計算累積報酬率（相對於初始資金）
+            # Calculate cumulative return (relative to initial capital) 
             cumulative_return = (total_value - initial_cash) / initial_cash
 
-            # 計算未實現損益和本次交易收益率
+            # Calculate unrealized P&L and return for this trade
             unrealized_pnl = 0.0
             unrealized_pnl_pct = 0.0
             position_entry_price = 0.0
 
-            # 如果有持倉，計算未實現損益
+            # If a position is held, Calculate unrealized P&L
             if current_position > 0:
-                # 從最近的買入交易中找到進場價格
+                # Find entry price from the most recent buy trade
                 recent_buy_trades = [t for t in trades if t.order_type.value == "buy"]
                 if recent_buy_trades:
                     latest_buy_trade = recent_buy_trades[-1]
@@ -567,27 +567,27 @@ class CustomBacktestEngine:
         transaction_cost: float = 0.001,
     ) -> Optional[Trade]:
         """
-        執行買入訂單
+        Execute buy order
 
         Args:
-            signal: 買入信號
-            price: 執行價格
-            portfolio: 投資組合狀態
-            symbol: 股票代碼
-            trade_id: 交易編號
+            signal: Buy signal
+            price: Execution price
+            portfolio: Portfolio state
+            symbol: Stock symbol
+            trade_id: Trade ID
 
         Returns:
-            交易記錄或None（如果無法執行）
+            Trade record or None (if execution is not possible) 
         """
-        # 只做多模式下，如果已有持股則不重複買入
+        # In long-only mode, do not buy again if shares are already held
         if (
             self.config.trading_mode == TradingMode.LONG_ONLY
             and portfolio.get_position(symbol) > 0
         ):
-            logger.info(f"已持有 {symbol}，跳過買入信號")
+            logger.info(f"Already holding {symbol}, Skip buy signal")
             return None
 
-        # 計算可買入股數
+        # Calculate affordable shares
         max_shares = (
             self.config.max_shares_per_trade
             if hasattr(self.config, "max_shares_per_trade")
@@ -597,29 +597,29 @@ class CustomBacktestEngine:
         commission = trade_value * transaction_cost
         total_cost = trade_value + commission
 
-        # 檢查資金是否足夠
+        # Check available funds
         if portfolio.cash < total_cost:
-            # 調整為可負擔的股數
+            # Adjust to affordable share quantity
             available_cash = portfolio.cash - commission
             if available_cash <= 0:
-                logger.warning(f"資金不足，無法買入 {symbol}")
+                logger.warning(f"Insufficient funds, Unable to buy {symbol}")
                 return None
 
             max_shares = int(available_cash // price)
             if max_shares <= 0:
-                logger.warning(f"資金不足，無法買入任何 {symbol} 股份")
+                logger.warning(f"Insufficient funds, Unable to buy any {symbol} shares")
                 return None
 
             trade_value = max_shares * price
             commission = trade_value * transaction_cost
             total_cost = trade_value + commission
 
-        # 執行買入
+        # Execute buy
         portfolio.cash -= total_cost
         current_position = portfolio.get_position(symbol)
         portfolio.update_position(symbol, current_position + max_shares)
 
-        # 建立交易記錄
+        # Create trade record
         trade = Trade(
             trade_id=f"T{trade_id:04d}",
             timestamp=signal.timestamp,
@@ -634,7 +634,7 @@ class CustomBacktestEngine:
             reason=signal.reason,
         )
 
-        logger.info(f"買入執行: {symbol} {max_shares}股 @ ${price:.2f}")
+        logger.info(f"Buy executed: {symbol} {max_shares} shares @ ${price:.2f}")
         return trade
 
     def _execute_sell_order(
@@ -647,36 +647,36 @@ class CustomBacktestEngine:
         transaction_cost: float = 0.001,
     ) -> Optional[Trade]:
         """
-        執行賣出訂單
+        Execute sell order
 
         Args:
-            signal: 賣出信號
-            price: 執行價格
-            portfolio: 投資組合狀態
-            symbol: 股票代碼
-            trade_id: 交易編號
+            signal: Sell signal
+            price: Execution price
+            portfolio: Portfolio state
+            symbol: Stock symbol
+            trade_id: Trade ID
 
         Returns:
-            交易記錄或None（如果無法執行）
+            Trade record or None (if execution is not possible) 
         """
         current_position = portfolio.get_position(symbol)
 
-        # 檢查是否有持股可賣
+        # Check for shares available to sell
         if current_position <= 0:
-            logger.debug(f"無 {symbol} 持股，無法執行賣出")
+            logger.debug(f"No {symbol} holdings, Unable to execute sale")
             return None
 
-        # 賣出全部持股
+        # Sell all shares held
         shares_to_sell = current_position
         trade_value = shares_to_sell * price
         commission = trade_value * transaction_cost
         proceeds = trade_value - commission
 
-        # 執行賣出
+        # Execute sell
         portfolio.cash += proceeds
         portfolio.update_position(symbol, 0)
 
-        # 建立交易記錄
+        # Create trade record
         trade = Trade(
             trade_id=f"T{trade_id:04d}",
             timestamp=signal.timestamp,
@@ -685,13 +685,13 @@ class CustomBacktestEngine:
             shares=shares_to_sell,
             price=price,
             commission=commission,
-            total_cost=proceeds,  # 對賣出而言，這是收入
+            total_cost=proceeds,  # For sell orders, this represents proceeds
             status=TradeStatus.EXECUTED,
             signal_confidence=signal.confidence,
             reason=signal.reason,
         )
 
-        logger.info(f"賣出執行: {symbol} {shares_to_sell}股 @ ${price:.2f}")
+        logger.info(f"Sell executed: {symbol} {shares_to_sell} shares @ ${price:.2f}")
         return trade
 
     def _calculate_performance_metrics(
@@ -702,36 +702,36 @@ class CustomBacktestEngine:
         signals: List[TradingSignal],
         symbol: str,
         strategy_name: str,
-        strategy: Union[TradingStrategy, None] = None,  # 新增策略對象參數
+        strategy: Union[TradingStrategy, None] = None,  # Add strategy object parameter
         initial_cash: float = 10000.0,
     ) -> Dict[str, Any]:
         """
-        計算績效指標
+        Calculate performance metrics
 
         Args:
-            portfolio_history: 投資組合歷史
-            data: 股價數據
-            trades: 交易記錄
-            signals: 原始交易信號
-            symbol: 股票代碼
-            strategy_name: 策略名稱
+            portfolio_history: Portfolio history
+            data: Stock price data
+            trades: Trade record
+            signals: Original trading signals
+            symbol: Stock symbol
+            strategy_name: Strategy name
 
         Returns:
-            績效指標字典
+            Performance metrics dictionary
         """
         if not portfolio_history:
-            raise ValueError("無投資組合歷史數據")
+            raise ValueError("No portfolio history data")
 
-        # 基本資訊
+        # Basic information
         start_date = portfolio_history[0]["date"]
         end_date = portfolio_history[-1]["date"]
         total_days = len(portfolio_history)
 
-        # 最終數值
+        # Final value
         final_value = portfolio_history[-1]["total_value"]
         final_return = portfolio_history[-1]["cumulative_return"]
 
-        # 計算年化報酬率
+        # Calculate annualized return
         days_in_year = 365.25
         years = total_days / days_in_year
         annual_return = (
@@ -740,35 +740,35 @@ class CustomBacktestEngine:
             else 0
         )
 
-        # 計算波動率
+        # Calculate volatility
         returns = [ph["cumulative_return"] for ph in portfolio_history]
         returns_series = pd.Series(returns)
         daily_returns = returns_series.pct_change().dropna()
-        volatility = daily_returns.std() * np.sqrt(252)  # 年化波動率
+        volatility = daily_returns.std() * np.sqrt(252)  # Annualized volatility
 
-        # 處理 NaN 值
+        # processing NaN value
         if pd.isna(volatility):
             volatility = 0.0
 
-        # 計算最大回撤
+        # Calculate maximum drawdown
         values = [ph["total_value"] for ph in portfolio_history]
         cummax = pd.Series(values).cummax()
         drawdown = (pd.Series(values) - cummax) / cummax
         max_drawdown = drawdown.min()
 
-        # 處理 NaN 值
+        # processing NaN value
         if pd.isna(max_drawdown):
             max_drawdown = 0.0
 
-        # 交易統計
+        # Trading statistics
         num_trades = len(trades)
         buy_trades = [t for t in trades if t.order_type == OrderType.BUY]
         sell_trades = [t for t in trades if t.order_type == OrderType.SELL]
 
-        # 計算勝率（需要配對買賣交易）
+        # Calculate win rate (Requires matching buy and sell trades) 
         win_rate = 0.0
         if len(buy_trades) > 0 and len(sell_trades) > 0:
-            # 簡化勝率計算：比較買入和賣出價格
+            # Simplified win-rate calculation: Compare buy and sell prices
             paired_trades = min(len(buy_trades), len(sell_trades))
             wins = sum(
                 1
@@ -777,16 +777,16 @@ class CustomBacktestEngine:
             )
             win_rate = wins / paired_trades if paired_trades > 0 else 0
 
-        # 基準比較（買入持有）
+        # Benchmark comparison (Buy and hold) 
         buy_hold_return = (data["close"].iloc[-1] / data["close"].iloc[0]) - 1
         alpha = final_return - buy_hold_return
 
-        # 生成交易事件
+        # Generate trading events
         trading_events = self._generate_trading_events(
             trades, portfolio_history, symbol
         )
 
-        # 轉換原始信號為前端可用格式
+        # Convert original signals to frontend-compatible format
         trading_signals = []
         for signal in signals:
             signal_type_str = (
@@ -807,7 +807,7 @@ class CustomBacktestEngine:
                 }
             )
 
-        # 整合結果，確保所有數值都是 Python 原生類型
+        # Combine results, Ensure all numbers are Python native types
         results = {
             "basic_info": {
                 "symbol": str(symbol),
@@ -832,7 +832,7 @@ class CustomBacktestEngine:
                 "win_rate": float(win_rate),
             },
             "strategy_statistics": {
-                # 從策略中獲取詳細統計（如果可用）
+                # Get detailed statistics from the strategy (if available) 
                 "total_realized_pnl": getattr(strategy, "total_realized_pnl", 0.0),
                 "total_trades": getattr(strategy, "total_trades", num_trades),
                 "winning_trades": getattr(strategy, "winning_trades", 0),
@@ -856,7 +856,7 @@ class CustomBacktestEngine:
                 "outperformed": bool(alpha > 0),
             },
             "trades": [trade.to_dict() for trade in trades],
-            "trading_signals": trading_signals,  # 新增：原始交易信號
+            "trading_signals": trading_signals,  # New: Original trading signals
             "portfolio_history": portfolio_history,
             "trading_events": trading_events,
             "stock_data": [
@@ -880,25 +880,25 @@ class CustomBacktestEngine:
         self, trades: List[Trade], portfolio_history: List[Dict[str, Any]], symbol: str
     ) -> List[Dict[str, Any]]:
         """
-        生成詳細的交易事件日誌
+        Generate detailed trading event logs
 
         Args:
-            trades: 交易記錄列表
-            portfolio_history: 投資組合歷史
-            symbol: 股票代碼
+            trades: List of trade records
+            portfolio_history: Portfolio history
+            symbol: Stock symbol
 
         Returns:
-            交易事件列表
+            Trading event list
         """
         events = []
 
-        # 建立日期到投資組合狀態的映射
+        # Map dates to portfolio states
         portfolio_dict = {}
         for ph in portfolio_history:
             date_key = ph["date"].date() if hasattr(ph["date"], "date") else ph["date"]
             portfolio_dict[date_key] = ph
 
-        # 處理每筆交易
+        # Process each trade
         for trade in trades:
             trade_date = (
                 trade.timestamp.date()
@@ -909,10 +909,10 @@ class CustomBacktestEngine:
 
             if trade.order_type == OrderType.BUY:
                 event_type = "buy_success"
-                description = f"買入信號執行成功，買入 {symbol} {trade.shares}股，價格 ${trade.price:.2f}"
+                description = f"Buy signal executed successfully, Buy {symbol} {trade.shares} shares, Price ${trade.price:.2f}"
             else:
                 event_type = "sell_success"
-                description = f"賣出信號執行成功，賣出 {symbol} {trade.shares}股，價格 ${trade.price:.2f}"
+                description = f"Sell signal executed successfully, Sell {symbol} {trade.shares} shares, Price ${trade.price:.2f}"
 
             events.append(
                 {
@@ -934,7 +934,7 @@ class CustomBacktestEngine:
                 }
             )
 
-        # 添加最終結算事件
+        # Add final settlement event
         if portfolio_history:
             final_state = portfolio_history[-1]
             events.append(
@@ -949,7 +949,7 @@ class CustomBacktestEngine:
                     "stock_value": final_state["stock_value"],
                     "current_equity": final_state["total_value"],
                     "cumulative_return": final_state["cumulative_return"],
-                    "description": f"最終結算 - 持有{symbol} {final_state['position']}股，現金 ${final_state['cash']:,.0f}，總資產 ${final_state['total_value']:,.0f}，累積報酬率 {final_state['cumulative_return'] * 100:.2f}%",
+                    "description": f"Final settlement - Holding{symbol} {final_state['position']} shares, Cash ${final_state['cash']:,.0f}, Total assets ${final_state['total_value']:,.0f}, Cumulative return {final_state['cumulative_return'] * 100:.2f}%",
                 }
             )
 
@@ -959,38 +959,38 @@ class CustomBacktestEngine:
         self, symbol: str, strategy_name: str, show_trades: bool = True
     ) -> go.Figure:
         """
-        生成回測結果圖表
+        Generate backtest results chart
 
         Args:
-            symbol: 交易標的
-            strategy_name: 策略名稱
-            show_trades: 是否顯示交易點
+            symbol: Trading symbol
+            strategy_name: Strategy name
+            show_trades: Whether to display trade markers
 
         Returns:
-            Plotly 圖表物件
+            Plotly Chart object
         """
         result_key = f"{symbol}_{strategy_name}"
 
         if result_key not in self.current_results:
-            raise ValueError(f"找不到 {symbol} 策略 {strategy_name} 的回測結果")
+            raise ValueError(f"Cannot find {symbol} Strategy {strategy_name} backtest results")
 
         result = self.current_results[result_key]
 
-        # 創建子圖
+        # Create subplots
         fig = make_subplots(
             rows=2,
             cols=1,
             shared_xaxes=True,
             vertical_spacing=0.05,
-            subplot_titles=[f"{symbol} 價格與交易", "累積報酬率"],
+            subplot_titles=[f"{symbol} Price and trades", "Cumulative return"],
             row_heights=[0.7, 0.3],
         )
 
-        # 股價數據
+        # Stock price data
         stock_data = result["stock_data"]
         dates = [pd.to_datetime(d["timestamp"]) for d in stock_data]
 
-        # 添加股價蜡燭圖
+        # Add stock candlestick chart
         fig.add_trace(
             go.Candlestick(
                 x=dates,
@@ -998,13 +998,13 @@ class CustomBacktestEngine:
                 high=[d["high"] for d in stock_data],
                 low=[d["low"] for d in stock_data],
                 close=[d["close"] for d in stock_data],
-                name=f"{symbol} 價格",
+                name=f"{symbol} Price",
             ),
             row=1,
             col=1,
         )
 
-        # 添加交易點
+        # Add trade markers
         if show_trades:
             buy_trades = [t for t in result["trades"] if t["order_type"] == "buy"]
             sell_trades = [t for t in result["trades"] if t["order_type"] == "sell"]
@@ -1016,9 +1016,9 @@ class CustomBacktestEngine:
                         y=[t["price"] for t in buy_trades],
                         mode="markers",
                         marker=dict(symbol="triangle-up", size=10, color="green"),
-                        name="買入",
-                        text=[f"買入 {t['shares']}股" for t in buy_trades],
-                        hovertemplate="%{text}<br>價格: $%{y:.2f}<extra></extra>",
+                        name="Buy",
+                        text=[f"Buy {t['shares']} shares" for t in buy_trades],
+                        hovertemplate="%{text}<br>Price: $%{y:.2f}<extra></extra>",
                     ),
                     row=1,
                     col=1,
@@ -1031,15 +1031,15 @@ class CustomBacktestEngine:
                         y=[t["price"] for t in sell_trades],
                         mode="markers",
                         marker=dict(symbol="triangle-down", size=10, color="red"),
-                        name="賣出",
-                        text=[f"賣出 {t['shares']}股" for t in sell_trades],
-                        hovertemplate="%{text}<br>價格: $%{y:.2f}<extra></extra>",
+                        name="Sell",
+                        text=[f"Sell {t['shares']} shares" for t in sell_trades],
+                        hovertemplate="%{text}<br>Price: $%{y:.2f}<extra></extra>",
                     ),
                     row=1,
                     col=1,
                 )
 
-        # 添加累積報酬率曲線
+        # Add cumulative return curve
         portfolio_history = result["portfolio_history"]
         portfolio_dates = [pd.to_datetime(ph["date"]) for ph in portfolio_history]
         cumulative_returns = [ph["cumulative_return"] * 100 for ph in portfolio_history]
@@ -1049,53 +1049,53 @@ class CustomBacktestEngine:
                 x=portfolio_dates,
                 y=cumulative_returns,
                 mode="lines",
-                name="策略累積報酬率",
+                name="Strategy cumulative return",
                 line=dict(color="blue"),
             ),
             row=2,
             col=1,
         )
 
-        # 添加基準線（買入持有）
+        # Add benchmark line (Buy and hold) 
         buy_hold_return = result["benchmark_comparison"]["buy_hold_return"]
         fig.add_hline(
             y=buy_hold_return * 100,
             line_dash="dash",
             line_color="orange",
-            annotation_text=f"買入持有: {buy_hold_return * 100:.2f}%",
+            annotation_text=f"Buy and hold: {buy_hold_return * 100:.2f}%",
             row=2,
             col=1,
         )
 
-        # 更新佈局
+        # Update layout
         fig.update_layout(
-            title=f"回測結果: {symbol} - {strategy_name}",
+            title=f"Backtest results: {symbol} - {strategy_name}",
             template="plotly_white",
             height=600,
             xaxis_rangeslider_visible=False,
         )
 
-        fig.update_yaxes(title_text="價格 ($)", row=1, col=1)
-        fig.update_yaxes(title_text="累積報酬率 (%)", row=2, col=1)
-        fig.update_xaxes(title_text="日期", row=2, col=1)
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Cumulative return (%)", row=2, col=1)
+        fig.update_xaxes(title_text="Date", row=2, col=1)
 
         return fig
 
     def get_backtest_summary(self, symbol: str, strategy_name: str) -> str:
         """
-        獲取回測摘要文字
+        Get backtest summary text
 
         Args:
-            symbol: 交易標的
-            strategy_name: 策略名稱
+            symbol: Trading symbol
+            strategy_name: Strategy name
 
         Returns:
-            格式化的回測摘要
+            Formatted backtest summary
         """
         result_key = f"{symbol}_{strategy_name}"
 
         if result_key not in self.current_results:
-            return f"找不到 {symbol} 策略 {strategy_name} 的回測結果"
+            return f"Cannot find {symbol} Strategy {strategy_name} backtest results"
 
         result = self.current_results[result_key]
         basic = result["basic_info"]
@@ -1103,36 +1103,36 @@ class CustomBacktestEngine:
         benchmark = result["benchmark_comparison"]
 
         summary = f"""
-回測摘要報告
+Backtest summary report
 {"=" * 60}
 
-基礎資訊:
-- 交易標的: {basic["symbol"]}
-- 策略名稱: {basic["strategy_name"]}
-- 回測期間: {basic["start_date"]} 至 {basic["end_date"]}
-- 交易天數: {basic["total_days"]}
-- 初始資金: ${basic["initial_capital"]:,.0f}
-- 每次最大買入股數: {basic["max_shares_per_trade"]}
+Basic information:
+- Trading symbol: {basic["symbol"]}
+- Strategy name: {basic["strategy_name"]}
+- Backtest period: {basic["start_date"]} to {basic["end_date"]}
+- Trading days: {basic["total_days"]}
+- Initial capital: ${basic["initial_capital"]:,.0f}
+- Maximum shares per buy: {basic["max_shares_per_trade"]}
 
-績效表現:
-- 最終資產: ${metrics["final_value"]:,.0f}
-- 總報酬率: {metrics["total_return"] * 100:.2f}%
-- 年化報酬率: {metrics["annual_return"] * 100:.2f}%
-- 年化波動率: {metrics["volatility"] * 100:.2f}%
-- 最大回撤: {metrics["max_drawdown"] * 100:.2f}%
+Performance:
+- Final assets: ${metrics["final_value"]:,.0f}
+- Total return: {metrics["total_return"] * 100:.2f}%
+- Annualized return: {metrics["annual_return"] * 100:.2f}%
+- Annualized volatility: {metrics["volatility"] * 100:.2f}%
+- Maximum drawdown: {metrics["max_drawdown"] * 100:.2f}%
 
-交易統計:
-- 交易次數: {metrics["num_trades"]}
-- 勝率: {metrics["win_rate"] * 100:.2f}%
+Trading statistics:
+- Number of trades: {metrics["num_trades"]}
+- Win rate: {metrics["win_rate"] * 100:.2f}%
 
-基準比較:
-- 買入持有報酬: {benchmark["buy_hold_return"] * 100:.2f}%
-- 策略超額報酬: {benchmark["alpha"] * 100:.2f}%
-- 是否跑贏基準: {"是" if benchmark["outperformed"] else "否"}
+Benchmark comparison:
+- Buy-and-hold return: {benchmark["buy_hold_return"] * 100:.2f}%
+- Strategy excess return: {benchmark["alpha"] * 100:.2f}%
+- Outperformed benchmark: {"Yes" if benchmark["outperformed"] else "No"}
         """.strip()
 
         return summary
 
 
-# 為了向後相容，保留原始類別名稱的別名
+# For backward compatibility, retain an alias for the original class name
 BacktestEngine = CustomBacktestEngine

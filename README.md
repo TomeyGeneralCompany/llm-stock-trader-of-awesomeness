@@ -3,9 +3,9 @@
 ![star](star-history-20251112.png)
 
 AI-powered stock trading backtesting system that integrates Large Language Models for intelligent trading decision analysis.
-![alt text](image.png)
-![alt text](image-1.png)
-![alt text](image-3.png)
+[Read the English interface guide](docs/interface-guide.md) for backtest controls, decision logs, charts, and daily strategy discussions.
+
+The interface, prompts, explanations, logs, comments, and project documentation use English. The original uploaded ZIP remains an unchanged upstream archive.
 
 ## System Architecture
 

@@ -501,7 +501,7 @@ Please use professional but concise language, keeping within 800 words. Highligh
                 )  # Reduced token limit
 
                 # Get LLM response with timeout handling
-                response = llm_client.invoke(context)
+                response = llm_client.invoke(context + "\nWrite the entire response in English.")
                 commentary = (
                     response.content if hasattr(response, "content") else str(response)
                 )

@@ -117,7 +117,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
 
   // Format date for display
   const formatDate = (dateString: string): string => {
-    return new Date(dateString).toLocaleDateString('zh-TW', {
+    return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
@@ -145,71 +145,71 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
     }
   }
 
-  // Translate technical event types to Chinese
+  // Translate technical event types to English
   const translateEventType = (eventType: string): string => {
     const translations: Record<string, string> = {
-      // 布林帶相關
-      'BB_UPPER_TOUCH': '觸及布林上軌',
-      'BB_LOWER_TOUCH': '觸及布林下軌',
-      'BB_SQUEEZE': '布林帶收縮',
-      'BB_EXPANSION': '布林帶擴張',
+      // Bollinger Band related
+      'BB_UPPER_TOUCH': 'Touch upper Bollinger Band',
+      'BB_LOWER_TOUCH': 'Touch lower Bollinger Band',
+      'BB_SQUEEZE': 'Bollinger Band squeeze',
+      'BB_EXPANSION': 'Bollinger Band expansion',
       
-      // 移動平均線相關
-      'MA_GOLDEN_CROSS': '均線黃金交叉',
-      'MA_DEATH_CROSS': '均線死亡交叉',
-      'MA_SUPPORT': '均線支撐',
-      'MA_RESISTANCE': '均線阻力',
+      // Moving-average related
+      'MA_GOLDEN_CROSS': 'Bullish moving-average crossover',
+      'MA_DEATH_CROSS': 'Bearish moving-average crossover',
+      'MA_SUPPORT': 'Moving-average support',
+      'MA_RESISTANCE': 'Moving-average resistance',
       
-      // MACD相關
-      'MACD_GOLDEN_CROSS': 'MACD黃金交叉',
-      'MACD_DEATH_CROSS': 'MACD死亡交叉',
-      'MACD_DIVERGENCE': 'MACD背離',
+      // MACD related
+      'MACD_GOLDEN_CROSS': 'MACD Bullish crossover',
+      'MACD_DEATH_CROSS': 'MACD Bearish crossover',
+      'MACD_DIVERGENCE': 'MACD Divergence',
       
-      // RSI相關
-      'RSI_OVERSOLD': 'RSI超賣',
-      'RSI_OVERBOUGHT': 'RSI超買',
-      'RSI_DIVERGENCE': 'RSI背離',
+      // RSI related
+      'RSI_OVERSOLD': 'RSI Oversold',
+      'RSI_OVERBOUGHT': 'RSI Overbought',
+      'RSI_DIVERGENCE': 'RSI Divergence',
       
-      // 成交量相關
-      'VOLUME_SPIKE': '成交量暴增',
-      'VOLUME_DRY_UP': '成交量萎縮',
-      'VOLUME_BREAKOUT': '放量突破',
-      'HIGH_VOLUME': '成交量爆量',
-      'VOLUME_EXPLOSION': '成交量爆量',
+      // Volume related
+      'VOLUME_SPIKE': 'Volume surge',
+      'VOLUME_DRY_UP': 'Volume contraction',
+      'VOLUME_BREAKOUT': 'High-volume breakout',
+      'HIGH_VOLUME': 'Exceptional volume surge',
+      'VOLUME_EXPLOSION': 'Exceptional volume surge',
       
-      // 趨勢相關
-      'TREND_TURN_BULLISH': '趨勢轉多',
-      'TREND_TURN_BEARISH': '趨勢轉空',
-      'TREND_ACCELERATION': '趨勢加速',
-      'TREND_WEAKNESS': '趨勢疲弱',
+      // Trend related
+      'TREND_TURN_BULLISH': 'Trend turns bullish',
+      'TREND_TURN_BEARISH': 'Trend turns bearish',
+      'TREND_ACCELERATION': 'Trend acceleration',
+      'TREND_WEAKNESS': 'Trend weakness',
       
-      // 動量相關
-      'MOMENTUM_SHIFT': '動量轉變',
-      'MOMENTUM_DIVERGENCE': '動量背離',
+      // Momentum related
+      'MOMENTUM_SHIFT': 'Momentum shift',
+      'MOMENTUM_DIVERGENCE': 'Momentum divergence',
       
-      // 其他
-      'GAP_UP': '向上跳空',
-      'GAP_DOWN': '向下跳空',
-      'HIGH_VOLATILITY': '高波動',
-      'LOW_VOLATILITY': '低波動',
+      // Other
+      'GAP_UP': 'Gap up',
+      'GAP_DOWN': 'Gap down',
+      'HIGH_VOLATILITY': 'High volatility',
+      'LOW_VOLATILITY': 'Low volatility',
       
-      // 未知或其他事件類型的默認處理
-      'unknown': '技術事件',
-      'UNKNOWN': '技術事件',
-      'OTHER': '其他技術信號'
+      // Default handling for unknown or other event types
+      'unknown': 'Technical event',
+      'UNKNOWN': 'Technical event',
+      'OTHER': 'Other technical signals'
     }
     
-    return translations[eventType] || `技術事件: ${eventType}`
+    return translations[eventType] || `Technical event: ${eventType}`
   }
 
-  // Translate severity levels to Chinese
+  // Translate severity levels to English
   const translateSeverity = (severity: string): string => {
     const translations: Record<string, string> = {
-      'high': '高',
-      'medium': '中',
-      'low': '低',
-      'very_high': '極高',
-      'very_low': '極低'
+      'high': 'High',
+      'medium': 'Medium',
+      'low': 'Low',
+      'very_high': 'Very high',
+      'very_low': 'Very low'
     }
     
     return translations[severity] || severity
@@ -222,21 +222,21 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Calendar className="h-5 w-5" />
-            📅 交易日誌探索
+            📅 Trading log explorer
           </CardTitle>
           <CardDescription>
-            選擇一個交易日，我們一起回顧那天的決策過程，看看有什麼值得討論的地方！
+            Select a trading day to review its decisions and discuss possible improvements.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {state.isLoadingDates ? (
             <div className="text-center py-4">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
-              <p className="mt-2 text-sm text-gray-600">載入可用日期中...</p>
+              <p className="mt-2 text-sm text-gray-600">Loading available dates...</p>
             </div>
           ) : state.availableDates.length === 0 ? (
             <div className="text-center py-4 text-gray-500">
-              沒有找到可用的分析日期
+              No analysis dates available
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
@@ -249,7 +249,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
                   disabled={state.isLoading}
                   className="text-xs"
                 >
-                  {new Date(date).toLocaleDateString('zh-TW', { 
+                  {new Date(date).toLocaleDateString('en-US', { 
                     month: 'short', 
                     day: 'numeric' 
                   })}
@@ -286,7 +286,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <AlertTriangle className="h-5 w-5" />
-                  技術事件
+                  Technical event
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -309,7 +309,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
                   {/* No events message */}
                   {state.analysis.historical_data.technical_events.length === 0 && (
                     <div className="text-center py-8 text-gray-500">
-                      當日無重要技術事件
+                      No important technical events that day
                     </div>
                   )}
                 </div>
@@ -325,40 +325,40 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
                   <div className="w-6 h-6 rounded-full bg-purple-500 flex items-center justify-center">
                     <span className="text-white text-xs font-bold">AI</span>
                   </div>
-                  🧠 AI的當日思考過程
+                  🧠 AI reasoning for the day
                 </CardTitle>
                 <CardDescription>
-                  讓我們看看AI那天是怎麼想的，你覺得它的推理合理嗎？
+                  Review the AI’s reasoning for this trading day. Does the explanation make sense to you?
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div className="grid grid-cols-1 gap-4">
                     <div>
-                      <div className="text-sm text-gray-600">決策類型</div>
+                      <div className="text-sm text-gray-600">Decision type</div>
                       <div className="text-lg font-bold">
                         {(() => {
                           const decisionType = state.analysis.historical_data.llm_decision.decision_type
                           const strategyState = state.analysis.historical_data.strategy_state
                           
-                          // 檢查是否有持倉信息 - 根據實際數據結構
+                          // Check for position information - Based on the actual data structure
                           const hasPosition = strategyState?.shares > 0 || 
                                             strategyState?.position === 'long' || 
                                             strategyState?.position === 'short'
                           
                           if (decisionType === 'BUY') {
-                            return '📈 買入'
+                            return '📈 Buy'
                           } else if (decisionType === 'SELL') {
-                            return '📉 賣出'
+                            return '📉 Sell'
                           } else if (decisionType === 'HOLD') {
-                            // 根據持倉狀態決定顯示內容
+                            // Choose display content based on position state
                             if (hasPosition) {
-                              return '⏸️ 持有'
+                              return '⏸️ Holding'
                             } else {
-                              return '💤 空倉觀望'
+                              return '💤 Waiting without a position'
                             }
                           } else {
-                            return '⏸️ 觀望'
+                            return '⏸️ Wait'
                           }
                         })()}
                       </div>
@@ -367,7 +367,7 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
                   
                   {state.analysis.historical_data.llm_decision.reasoning && (
                     <div>
-                      <div className="text-sm text-gray-600 mb-2">分析推理</div>
+                      <div className="text-sm text-gray-600 mb-2">Analysis reasoning</div>
                       <div className="text-sm bg-gray-50 p-3 rounded-lg whitespace-pre-line">
                         {state.analysis.historical_data.llm_decision.reasoning}
                       </div>
@@ -384,10 +384,10 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <MessageSquare className="h-5 w-5" />
-                  💬 策略討論室
+                  💬 Strategy discussion room
                 </CardTitle>
                 <CardDescription>
-                  與AI助手一起探討交易決策，分享你的見解並獲得策略優化建議
+                  Discuss trading decisions with the AI assistant. Share your insights and get suggestions for improving the strategy.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -407,9 +407,9 @@ function DayAnalysis({ runId, onDateSelect }: DayAnalysisProps) {
             <div className="w-16 h-16 bg-gradient-to-r from-blue-100 to-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
               <Calendar className="h-8 w-8 text-blue-500" />
             </div>
-            <h3 className="text-lg font-medium text-gray-700 mb-2">🚀 準備開始我們的策略討論吧！</h3>
+            <h3 className="text-lg font-medium text-gray-700 mb-2">🚀 Let us start discussing the strategy!</h3>
             <p className="text-gray-500 max-w-md mx-auto">
-              從上方選擇一個交易日，我會告訴你那天發生了什麼，然後我們可以一起聊聊策略優化的想法 💭
+              Select a trading day above to review what happened and discuss ideas for improving the strategy. 💭
             </p>
           </CardContent>
         </Card>
@@ -426,7 +426,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
 
   const handleSubmitFeedback = async () => {
     if (!feedback.trim()) {
-      setError('請告訴我你的想法！')
+      setError('Please share your thoughts!')
       return
     }
 
@@ -446,7 +446,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
       })
 
       if (!response.ok) {
-        throw new Error(`討論過程中發生問題: ${response.status}`)
+        throw new Error(`A problem occurred during the discussion: ${response.status}`)
       }
 
       const data: DailyImprovementResponse = await response.json()
@@ -454,7 +454,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
       
     } catch (err) {
       console.error('Daily feedback error:', err)
-      setError(err instanceof Error ? err.message : '討論過程中發生錯誤')
+      setError(err instanceof Error ? err.message : 'An error occurred during the discussion')
     } finally {
       setIsAnalyzing(false)
     }
@@ -474,10 +474,10 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
           <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
             <span className="text-white text-sm font-bold">AI</span>
           </div>
-          <h4 className="font-medium text-blue-900">策略討論助手</h4>
+          <h4 className="font-medium text-blue-900">Strategy discussion assistant</h4>
         </div>
         <p className="text-sm text-blue-700">
-          我想聽聽你對 <span className="font-semibold">{date}</span> 這天決策的看法！我們一起來探討交易策略的優化方向 🤔
+          What do you think of the decision on <span className="font-semibold">{date}</span>? Let us explore ways to improve the trading strategy. 🤔
         </p>
       </div>
 
@@ -485,10 +485,10 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
       <div className="space-y-3">
         <div>
           <label className="text-sm font-medium text-gray-700 mb-2 block flex items-center gap-2">
-            💬 你的想法是...
+            💬 Your thoughts...
           </label>
           <Textarea
-            placeholder="嗨！告訴我你的想法吧... 比如：「我覺得這天不該賣出，因為...」或者「我同意這個決策，但是...」"
+            placeholder="Share your thoughts. For example: “I think it should not have sold that day, because...” or “I agree with this decision, but...”"
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={4}
@@ -507,10 +507,10 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
             {isAnalyzing ? (
               <>
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                思考中...
+                Thinking...
               </>
             ) : (
-              '開始討論 💭'
+              'Start discussion 💭'
             )}
           </Button>
           
@@ -521,7 +521,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
               disabled={isAnalyzing}
               className="border-blue-300 text-blue-600 hover:bg-blue-50"
             >
-              🔄 重新討論
+              🔄 Discuss again
             </Button>
           )}
         </div>
@@ -546,8 +546,8 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="font-medium text-gray-900">策略分析助手</span>
-                  <Badge variant="secondary" className="text-xs">剛剛</Badge>
+                  <span className="font-medium text-gray-900">Strategy analysis assistant</span>
+                  <Badge variant="secondary" className="text-xs">Just now</Badge>
                 </div>
                 
                 {/* Analysis as conversation */}
@@ -555,7 +555,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
                   <div className="flex items-start gap-2">
                     <BarChart3 className="h-4 w-4 mt-0.5 text-blue-500 flex-shrink-0" />
                     <div>
-                      <div className="font-medium text-gray-900 mb-1">我的看法：</div>
+                      <div className="font-medium text-gray-900 mb-1">My assessment: </div>
                       <div className="whitespace-pre-wrap">{cleanMarkdown(result.analysis)}</div>
                     </div>
                   </div>
@@ -566,10 +566,10 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm font-medium text-gray-900">
                       <FileText className="h-4 w-4 text-green-500" />
-                      📝 策略文件修改建議（traditional_strategy.md）：
+                      📝 Strategy file modification suggestions (traditional_strategy.md) : 
                     </div>
                     {result.suggestions.map((suggestion, index) => {
-                      // 分離標題和詳細內容
+                      // Separate title and details
                       const lines = suggestion.split('\n')
                       const title = lines[0] || suggestion
                       const details = lines.slice(1).join('\n').trim()
@@ -578,22 +578,22 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
                         <div key={index} className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 p-4 rounded-lg text-sm">
                           <div className="flex items-start gap-3">
                             <span className="text-green-600 font-bold text-xs bg-green-100 px-2 py-1 rounded-full flex-shrink-0">
-                              修改 {index + 1}
+                              Modify {index + 1}
                             </span>
                             <div className="text-gray-700 flex-1">
                               <div className="flex items-center gap-2 mb-3">
                                 <div className="font-mono text-xs text-green-800 bg-green-100 px-2 py-1 rounded">
                                   📄 traditional_strategy.md
                                 </div>
-                                <div className="text-xs text-green-600 font-medium">策略文件修改</div>
+                                <div className="text-xs text-green-600 font-medium">Strategy file changes</div>
                               </div>
                               
-                              {/* 標題 */}
+                              {/* Title */}
                               <div className="font-semibold text-gray-800 mb-2">
                                 {cleanMarkdown(title)}
                               </div>
                               
-                              {/* 詳細內容 - 如果有的話 */}
+                              {/* Details - if any */}
                               {details && (
                                 <div className="text-gray-600 text-xs leading-relaxed bg-white bg-opacity-50 p-3 rounded border-l-2 border-green-300">
                                   <div className="whitespace-pre-wrap">{cleanMarkdown(details)}</div>
@@ -610,7 +610,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
                 {/* Encourage further discussion */}
                 <div className="mt-4 pt-3 border-t border-gray-100">
                   <p className="text-xs text-gray-500 italic">
-                    � 這些建議可以直接應用到策略文件中！有其他優化想法嗎？點擊「重新討論」繼續完善我們的交易策略！
+                    � These suggestions can be applied directly to the strategy file!Any other optimization ideas?Click“Discuss again”Continue improving our trading strategy!
                   </p>
                 </div>
               </div>
