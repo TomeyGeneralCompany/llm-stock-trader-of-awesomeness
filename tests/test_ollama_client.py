@@ -236,3 +236,22 @@ def test_async_inference_leaves_the_event_loop_available(mock_ollama):
             release.set()
 
     asyncio.run(run())
+
+
+
+def test_research_schema_reaches_native_ollama_without_changing_resource_limits(mock_ollama):
+    from app.intelligence.schema import ResearchOutput
+    schema=ResearchOutput.model_json_schema()
+    def handler(request):
+        payload=json.loads(request.content)
+        assert payload["format"]==schema
+        assert payload["options"]["num_thread"]==4
+        assert payload["options"]["num_ctx"]==8192
+        assert payload["think"] is False
+        assert request.extensions["timeout"]["read"] is None
+        return answer('{"status":"exhausted","findings":[],"relationships":[],"hypotheses":[],"followups":[]}')
+    mock_ollama(handler)
+    client=local_ai.get_llm_client(max_tokens=1800,response_format="json",response_schema=schema)
+    assert json.loads(client.invoke("Investigate the supplied cited evidence.").content)["status"]=="exhausted"
+    assert "evidence" in schema["$defs"]["Hypothesis"]["required"]
+    assert schema["$defs"]["Followup"]["properties"]["terms"]["type"]=="string"

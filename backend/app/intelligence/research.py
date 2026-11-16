@@ -9,6 +9,7 @@ from app.stage_resources import stage_resources
 
 from .store import dump, sha, stamp, classify_event
 from .statistics import aggregate, event_study
+from .schema import ResearchOutput
 
 PREDICATES = {"supplies", "purchases", "competes", "owns", "operates_in", "regulated_by", "depends_on", "exposed_to", "financed_by"}
 
@@ -19,7 +20,12 @@ confidence, interpretation, evidence). predicate must be exactly one of supplies
 direction -1/0/1, expected_return signed fractional change, horizon_minutes positive integer,
 causal_chain list, confidence 0..1, assumptions list, contradictions list of cited explanations,
 invalidation, evidence); followups (question, terms, sources list).
+Every hypothesis MUST include its own evidence array, even when repeating a finding's citations.
+contradictions must be an array of objects {"claim": "explanation", "evidence": [{"chunk_id": "E1", "quote": "exact source text"}]}, or [].
+followups terms must be one string; sources must name configured source IDs, never evidence aliases like E1.
 Every evidence item must contain chunk_id (E1 etc) and an exact short quote from that chunk.
+Insufficient statistics are uncertainty, not contradictory source evidence; record them in assumptions.
+Use concise complete objects; avoid unnecessary repetition.
 Separate observations, causal interpretation and predictions. Do not invent evidence, tickers,
 prices or statistics. Follow secondary and opposing effects through supported relationships;
 consider what is already incorporated in price. Temporal proximity does not prove causation.
@@ -34,7 +40,7 @@ Keep the response concise. You have no terminal, shell, filesystem-write or orde
 class CausalResearch:
     def __init__(self, store, client=None):
         self.store = store
-        self.client = client or get_llm_client(max_tokens=1800, response_format="json")
+        self.client = client or get_llm_client(max_tokens=1800, response_format="json", response_schema=ResearchOutput.model_json_schema())
 
     def evidence(self, values, aliases, now):
         if not isinstance(values, list) or not values:
@@ -86,6 +92,7 @@ class CausalResearch:
             db.execute("UPDATE research_tasks SET status='running',lease=? WHERE id=?",
                        (stamp(datetime.fromisoformat(now)+timedelta(hours=1)), task["id"]))
             event = db.execute("SELECT * FROM events WHERE id=?", (task["event"],)).fetchone()
+            source_ids = [row[0] for row in db.execute("SELECT id FROM sources")]
             symbols = list(self.store.catalog(now))[:30]
             prior = [json.loads(r[0]) for r in db.execute("SELECT body FROM research_findings WHERE task=? AND available<=? ORDER BY available DESC LIMIT 2", (task["id"], now))]
         catalog = self.store.catalog(now)
@@ -98,7 +105,7 @@ class CausalResearch:
         relevant = [symbol for symbol, metadata in catalog.items() if symbol.lower() in document_text or metadata.get("company", symbol).lower() in document_text]
         symbols = list(dict.fromkeys(relevant + symbols))[:30]
         budget = prompt_budget(self.client.config.num_ctx, self.client.config.max_tokens) - 900
-        header = INSTRUCTIONS + "\nQuestion: " + task["question"] + "\nRegistered symbols: " + ",".join(symbols)
+        header = INSTRUCTIONS + "\nQuestion: " + task["question"] + "\nRegistered symbols: " + ",".join(symbols) + "\nConfigured acquisition source IDs: " + ",".join(source_ids)
         with self.store.connect() as db:
             graph = [json.loads(row[0]) for row in db.execute("SELECT evidence FROM entity_relationships WHERE available<=? ORDER BY available DESC LIMIT 8", (now,))]
         for relation in graph:
@@ -132,7 +139,9 @@ class CausalResearch:
             prompt += line
         prompt += ("\nNow return only the research JSON object. Required root keys: status, findings (array), "
                    "relationships (array), hypotheses (array), followups (array). "
-                   "Include exact cited quotations in findings; do not return input metadata or the statistics object.\n")
+                   "Include exact cited quotations in findings, relationships and EACH hypothesis. "
+                   "Contradictions are cited objects or []; followup terms is a string and sources are configured IDs. "
+                   "Do not return input metadata or the statistics object.\n")
         try:
             if not aliases:
                 raise ValueError("Research instructions leave no room for evidence.")
@@ -162,7 +171,7 @@ class CausalResearch:
                         logging.getLogger(__name__).warning("Research schema correction: %s; response=%s", str(exc), raw[:3000])
                         if attempt:
                             raise
-                        prompt += "\nCorrection: " + str(exc)[:200] + ". Return all five root keys; findings/relationships/hypotheses/followups are arrays, with cited evidence. direction must match the sign of expected_return."
+                        prompt += "\nCorrection: " + str(exc)[:350] + ". Return all five root keys; findings/relationships/hypotheses/followups are arrays, with cited evidence. direction must match the sign of expected_return."
             self.store.log("ANALYZE", {"task": task["id"], "supported_findings": len(validated["findings"]), "hypotheses": len(validated["hypotheses"])}, now)
             finding_id = sha(task["id"] + now + raw)
             with self.store.connect() as db:
@@ -255,6 +264,20 @@ class CausalResearch:
             catalog = self.store.catalog(now)
             symbols = set(catalog)
             sources = {r[0] for r in db.execute("SELECT id FROM sources")}
+        contracts = {
+            "findings": ("claim", "stance", "evidence"),
+            "relationships": ("subject", "subject_kind", "object", "object_kind", "predicate", "confidence", "interpretation", "evidence"),
+            "hypotheses": ("event", "classification", "affected_symbols", "direction", "expected_return", "horizon_minutes", "causal_chain", "confidence", "assumptions", "contradictions", "invalidation", "evidence"),
+            "followups": ("question", "terms", "sources"),
+        }
+        missing = []
+        for collection, required in contracts.items():
+            for index, item in enumerate(result[collection]):
+                if not isinstance(item, dict):
+                    raise ValueError(collection+" items must be objects.")
+                missing.extend(collection+"["+str(index)+"]."+key for key in required if key not in item)
+        if missing:
+            raise ValueError("Missing required fields: "+", ".join(missing)+". Evidence is [{chunk_id: E1, quote: exact source text}].")
         for finding in result["findings"]:
             if not finding.get("claim") or finding.get("stance") not in ("supports", "contradicts", "unresolved"):
                 raise ValueError("Findings need claims and explicit support/contradiction status.")
