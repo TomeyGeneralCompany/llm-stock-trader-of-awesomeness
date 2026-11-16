@@ -215,9 +215,10 @@ class SourceAcquisition:
             text = text_of(raw)
             if not text:
                 raise ValueError("Article contained no usable text.")
-            self.store.archive(url=payload["url"], publisher=urlsplit(url).hostname, title=title,
+            version = self.store.archive(url=payload["url"], publisher=urlsplit(url).hostname, title=title,
                 text=text, published=payload.get("published", now), acquired=now, payload=raw,
                 chunk_chars=self.config.MEMORY_CHUNK_CHARS)
+            self.link_followup(payload, version, now)
             return
         if job["kind"] == "listing":
             reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")), delimiter="|")
@@ -244,12 +245,22 @@ class SourceAcquisition:
         else:
             items = parse_feed(raw, payload["url"], now)
         for item in items:
-            self.store.archive(**item, publisher=urlsplit(item["url"]).hostname, acquired=now,
+            version = self.store.archive(**item, publisher=urlsplit(item["url"]).hostname, acquired=now,
                                payload=raw, chunk_chars=self.config.MEMORY_CHUNK_CHARS)
+            self.link_followup(payload, version, now)
             link_host = urlsplit(item["url"]).hostname
             # A public source's own article is a structured follow-up, never a shell task.
             if job["kind"] in ("feed", "gdelt") and urlsplit(item["url"]).scheme == "https":
-                self.store.enqueue(job["source"], "article", {"url": canonical(item["url"]), "published": item["published"], "title": item["title"], "summary_hash": __import__("hashlib").sha256(item["text"].encode()).hexdigest()}, now)
+                self.store.enqueue(job["source"], "article", {"url": canonical(item["url"]), "published": item["published"], "title": item["title"], "summary_hash": __import__("hashlib").sha256(item["text"].encode()).hexdigest(), **({"task": payload["task"]} if payload.get("task") else {})}, now)
+
+    def link_followup(self, payload, version, now):
+        if not payload.get("task"):
+            return
+        with self.store.connect() as db:
+            task = db.execute("SELECT event FROM research_tasks WHERE id=?", (payload["task"],)).fetchone()
+            if task:
+                db.execute("INSERT OR IGNORE INTO event_evidence VALUES(?,?,'unassessed')", (task["event"],version))
+                db.execute("UPDATE research_tasks SET status='queued',updated=? WHERE id=? AND status='waiting_evidence'", (now,payload["task"]))
 
     def market(self, symbol, kind, now, payload=None):
         import yfinance as yf

@@ -303,3 +303,27 @@ def test_event_response_timing_and_condition_groups_are_calculated():
     assert summary["mean_peak_minutes"]==55
     assert summary["condition_comparison"][0]["sample_size"]==1
     assert summary["mean_cumulative_abnormal_return"]==pytest.approx(.12)
+
+
+
+def test_unrelated_documents_do_not_wake_waiting_investigations(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel(status="continue"))
+    fixture(intel)
+    intel.research.step(WHEN)
+    later=WHEN+timedelta(minutes=1)
+    intel.store.archive(url="https://example.org/unrelated",publisher="example.org",title="Completely unrelated weather",
+        text="Completely unrelated weather.",published=later,acquired=later)
+    with intel.store.connect() as db:
+        db.execute("UPDATE research_tasks SET status='sufficient' WHERE question LIKE '%Search terms:%' OR event IN (SELECT id FROM events WHERE title='Completely unrelated weather')")
+    assert intel.research.step(later) is None
+
+
+
+def test_research_relationship_enrichment_uses_asof_metadata(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    intel.store.security("AAA",{"industry":"Future industry"},WHEN+timedelta(days=1))
+    intel.research.step(WHEN)
+    assert intel.store.catalog(WHEN)["AAA"]["industry"]=="Manufacturing"
+    assert intel.store.catalog(WHEN+timedelta(days=2))["AAA"]["industry"]=="Future industry"
+    assert intel.store.catalog(WHEN)["AAA"]["related_companies"][0]["company"]=="BBB"

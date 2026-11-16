@@ -77,7 +77,7 @@ class CausalResearch:
         with self.store.connect() as db:
             db.execute("UPDATE research_tasks SET status='queued',lease=NULL WHERE status='running' AND lease<?", (now,))
             db.execute("""UPDATE research_tasks SET status='queued' WHERE status='waiting_evidence'
-                AND updated < COALESCE((SELECT MAX(available) FROM document_versions),'')""")
+                AND updated < COALESCE((SELECT MAX(v.available) FROM document_versions v JOIN event_evidence e ON e.version=v.id WHERE e.event=research_tasks.event AND v.available<=?), '')""", (now,))
             db.execute("BEGIN IMMEDIATE") if not db.in_transaction else None
             task = db.execute("SELECT * FROM research_tasks WHERE status='queued' AND updated<=? ORDER BY priority DESC,updated LIMIT 1", (now,)).fetchone()
             if not task:
@@ -171,7 +171,7 @@ class CausalResearch:
                     entities = []
                     for side in ("subject", "object"):
                         ident = sha(relation[side+"_kind"] + ":" + relation[side].lower())
-                        matches = [r["symbol"] for r in db.execute("SELECT symbol,body FROM securities") if relation[side].lower() in json.loads(r["body"]).get("company", r["symbol"]).lower() or relation[side].upper()==r["symbol"]]
+                        matches = [symbol for symbol, metadata in catalog.items() if relation[side].lower() in metadata.get("company", symbol).lower() or relation[side].upper()==symbol]
                         symbol = matches[0] if len(matches)==1 else None
                         db.execute("INSERT OR IGNORE INTO entities VALUES(?,?,?,?,?,?)", (ident, relation[side], relation[side+"_kind"], symbol, dump(relation["evidence"]), now))
                         entities.append(ident)
@@ -180,8 +180,7 @@ class CausalResearch:
                     for side, other in (("subject","object"),("object","subject")):
                         entity = db.execute("SELECT symbol FROM entities WHERE id=?", (entities[0 if side=="subject" else 1],)).fetchone()
                         if entity and entity[0]:
-                            row = db.execute("SELECT body FROM securities WHERE symbol=?", (entity[0],)).fetchone()
-                            metadata = json.loads(row[0])
+                            metadata = dict(catalog[entity[0]])
                             link = {"company": relation[other], "relationship": relation["predicate"],
                                     "direction": "outgoing" if side=="subject" else "incoming", "evidence": relation["evidence"]}
                             related = metadata.setdefault("related_companies", [])
@@ -197,7 +196,6 @@ class CausalResearch:
                 for hypothesis in validated["hypotheses"]:
                     ident = sha(finding_id + dump(hypothesis))
                     db.execute("INSERT OR IGNORE INTO causal_hypotheses VALUES(?,?,?,?,?)", (ident, task["event"], now, dump(hypothesis), dump(hypothesis["evidence"])))
-                    db.execute("UPDATE events SET classification=? WHERE id=?", (hypothesis["classification"], task["event"]))
                     for symbol in hypothesis["affected_symbols"]:
                         observations = self.store.observations(symbol, now)
                         if not observations:
