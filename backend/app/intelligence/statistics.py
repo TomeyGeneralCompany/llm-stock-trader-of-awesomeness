@@ -31,6 +31,14 @@ def event_study(asset, benchmark, event_time, pre=20, window=12):
     volume_base = float(base_rows.volume.tail(pre).mean())
     responses = observed.close / base - 1
     volume_ratios = observed.volume / volume_base if volume_base > 0 else pd.Series(dtype=float)
+    first = datetime.fromisoformat(str(after.index[0]))
+    peak = datetime.fromisoformat(str(responses.abs().idxmax()))
+    last = datetime.fromisoformat(str(after.index[-1]))
+    origin = datetime.fromisoformat(str(event_time))
+    movement = responses.abs()
+    threshold = max(.001, float((before.asset-alpha-beta*before.market).std(ddof=1)))
+    onset = responses.index[movement >= threshold]
+    market_trend = "rising" if before.market.mean() > 0 else "falling" if before.market.mean() < 0 else "flat"
     result = {
         "status": "complete", "sample_size": len(before), "event_observations": len(after),
         "alpha": alpha, "beta": beta, "abnormal_returns": abnormal.tolist(),
@@ -39,6 +47,12 @@ def event_study(asset, benchmark, event_time, pre=20, window=12):
         "favorable_excursion": float((observed.high / base - 1).max()) if "high" in observed else float(responses.max()),
         "unfavorable_excursion": float((observed.low / base - 1).min()) if "low" in observed else float(responses.min()),
         "peak_time": responses.abs().idxmax(),
+        "onset_minutes": (datetime.fromisoformat(str(onset[0]))-origin).total_seconds()/60 if len(onset) else None,
+        "peak_minutes": (peak-origin).total_seconds()/60,
+        "observation_window_minutes": (last-first).total_seconds()/60,
+        "response_duration_bars": int((movement >= threshold).sum()),
+        "conditions": {"market_trend": market_trend, "pre_event_market_volatility": float(before.market.std(ddof=1)),
+                       "session": observed.session.iloc[0] if "session" in observed else "unknown"},
         "abnormal_volume_peak": float(volume_ratios.max()) if len(volume_ratios) else None,
         "abnormal_volume_duration_bars": int((volume_ratios > 1).sum()) if len(volume_ratios) else None,
         "reversal": bool(responses.iloc[-1] * responses.loc[responses.abs().idxmax()] < 0),
@@ -56,7 +70,7 @@ def aggregate(studies):
         return {"sample_size": 0, "status": "insufficient_data", "mean": None, "median": None,
                 "positive_frequency": None, "negative_frequency": None, "uncertainty": None}
     error = float(values.std(ddof=1) / math.sqrt(len(values))) if len(values) > 1 else None
-    return {"sample_size": len(values), "status": "complete", "mean": float(values.mean()),
+    result = {"sample_size": len(values), "status": "complete", "mean": float(values.mean()),
             "median": float(np.median(values)), "positive_frequency": float((values > 0).mean()),
             "negative_frequency": float((values < 0).mean()),
             "mean_favorable_excursion": float(np.mean([s["favorable_excursion"] for s in usable])),
@@ -64,6 +78,19 @@ def aggregate(studies):
             "reversal_frequency": float(np.mean([s["reversal"] for s in usable])),
             "uncertainty": {"method": "normal approximation, not causal certainty", "standard_error": error,
                             "mean_interval_95": [float(values.mean()-1.96*error), float(values.mean()+1.96*error)] if error is not None else None}}
+    for field in ("peak_minutes", "onset_minutes", "response_duration_bars", "abnormal_volume_peak",
+                  "abnormal_volume_duration_bars", "cumulative_abnormal_return"):
+        numbers = [float(study[field]) for study in usable if study.get(field) is not None]
+        result["mean_"+field] = float(np.mean(numbers)) if numbers else None
+    groups = {}
+    for study in usable:
+        label = study.get("conditions", {}).get("market_trend", "unknown")
+        groups.setdefault(label, []).append(study["fractional_return"])
+    result["condition_comparison"] = [
+        {"market_trend": label, "sample_size": len(samples), "mean": float(np.mean(samples)),
+         "median": float(np.median(samples)), "positive_frequency": float(np.mean(np.array(samples)>0))}
+        for label, samples in groups.items()]
+    return result
 
 
 def score_forecast(prediction, actual):

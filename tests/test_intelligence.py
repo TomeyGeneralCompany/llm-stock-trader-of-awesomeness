@@ -281,3 +281,25 @@ def test_catalyst_prioritizes_acquisition_without_inventing_a_base_price(tmp_pat
     with intel.store.connect() as db:
         assert db.execute("SELECT status FROM market_research_waits").fetchone()[0]=="research_queued"
         assert "priced in" in db.execute("SELECT question FROM research_tasks WHERE priority=3").fetchone()[0]
+
+
+
+def test_event_response_timing_and_condition_groups_are_calculated():
+    import math
+    asset, benchmark = [], []
+    ap, mp = 100., 100.
+    for i in range(45):
+        market_return = .001 + math.sin(i)*.002
+        ap *= 1 + .0005 + 1.5*market_return + (.01 if i>=30 else 0)
+        mp *= 1 + market_return
+        end = stamp(WHEN+timedelta(minutes=i*5))
+        asset.append(dict(end=end,close=ap,high=ap*1.01,low=ap*.99,volume=200 if i>=30 else 100,session="regular"))
+        benchmark.append(dict(end=end,close=mp,volume=100))
+    result=event_study(asset,benchmark,asset[30]["end"],pre=20,window=12)
+    assert result["onset_minutes"]==0
+    assert result["peak_minutes"]==55
+    assert result["response_duration_bars"]==12
+    summary=aggregate([result])
+    assert summary["mean_peak_minutes"]==55
+    assert summary["condition_comparison"][0]["sample_size"]==1
+    assert summary["mean_cumulative_abnormal_return"]==pytest.approx(.12)

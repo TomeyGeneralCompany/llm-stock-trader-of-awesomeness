@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 
 interface Status {
   status: string
+  lessons: { symbol: string; available: string; body: string }[]
+  activity: { id: number; stamp: string; stage: string; body: string }[]
   counts: Record<string, number>
   sources: { id: string; last_success: string | null; failures: number; error: string | null }[]
   investigations: { id: string; question: string; status: string; steps: number; error: string | null }[]
@@ -29,6 +31,7 @@ export default function IntelligenceStatus() {
       {data && <>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
+            ['Securities', data.counts.securities || 0],
             ['Documents', data.counts.document_versions || 0],
             ['Relationships', data.counts.entity_relationships || 0],
             ['Investigations', data.counts.research_tasks || 0],
@@ -52,6 +55,15 @@ export default function IntelligenceStatus() {
             const body = JSON.parse(forecast.body) as { expected_return: number; confidence: number; invalidation: string; evidence: { chunk_id: string }[] }
             return <div key={forecast.id} className="my-3 text-sm"><strong>{forecast.symbol}</strong>: {(body.expected_return * 100).toFixed(2)}% forecast · confidence {body.confidence} · {forecast.status}<p>Horizon ends {forecast.target}. Invalidation: {body.invalidation}</p>{body.evidence.map((evidence, index) => <a key={index} className="underline mr-3" href={'http://localhost:8000/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id)} target="_blank" rel="noreferrer">Evidence {index + 1}</a>)}</div>
           })}
+        </details>
+        <details className="border rounded p-3">
+          <summary>Saved lessons and recent work</summary>
+          {data.lessons.map((lesson, index) => {
+            const body = JSON.parse(lesson.body) as { actual_return?: number; absolute_error?: number; error_classes?: string[]; causal_interpretation?: string }
+            return <div key={lesson.available + index} className="my-3 text-sm"><strong>{lesson.symbol}</strong> · {lesson.available}<p>{body.causal_interpretation || 'Evidence-backed outcome awaiting causal review.'}</p><p>{body.actual_return !== undefined && 'Observed return: ' + (body.actual_return * 100).toFixed(2) + '% · '}{body.error_classes?.join(', ') || 'No classified discrepancy'}</p></div>
+          })}
+          {!data.lessons.length && <p>Waiting for observed outcomes.</p>}
+          {data.activity.slice(0, 12).map(event => <p key={event.id} className="text-sm my-1"><strong>{event.stage}</strong> · {event.stamp} · {event.body}</p>)}
         </details>
         <details className="border rounded p-3">
           <summary>Observed forecast accuracy</summary>
