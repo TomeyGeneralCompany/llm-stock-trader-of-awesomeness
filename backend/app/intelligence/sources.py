@@ -122,7 +122,7 @@ class SourceAcquisition:
                 db.execute("INSERT OR IGNORE INTO sources(id,body,next_due) VALUES(?,?,?)", (ident, dump(body), now))
         for symbol in self.config.INTELLIGENCE_BENCHMARKS.split(","):
             if symbol.strip():
-                self.store.security(symbol.strip(), {"company": symbol.strip(), "security_type": "benchmark"}, now)
+                self.store.security(symbol.strip(), {"company": symbol.strip(), "security_type": "benchmark"}, stamp())
                 self.store.enqueue("yahoo", "market", {"symbol": symbol.strip()}, now)
 
     def schedule(self, now):
@@ -174,6 +174,7 @@ class SourceAcquisition:
                     else:
                         db.execute("UPDATE acquisition_jobs SET status='complete',lease=NULL,error=NULL WHERE id=?", (row["id"],))
                     db.execute("UPDATE sources SET last_success=?,failures=0,error=NULL WHERE id=?", (now, row["source"]))
+                self.store.log("ACQUIRE", {"job": row["id"], "source": row["source"], "status": "success"}, now)
                 count += 1
             except Exception as exc:
                 error = str(exc).replace(self.config.FRED_API_KEY, "[redacted]") if self.config.FRED_API_KEY else str(exc)
@@ -257,7 +258,7 @@ class SourceAcquisition:
             info = ticker.get_info()
             self.store.security(symbol, {"company": info.get("longName", symbol), "sector": info.get("sector"),
                 "industry": info.get("industry"), "activities": info.get("longBusinessSummary"),
-                "geographic_exposure": [info["country"]] if info.get("country") else [],
+                "headquarters_country": info.get("country"), "geographic_exposure": [],
                 "capitalization": info.get("marketCap"), "security_type": info.get("quoteType"), "source": "https://finance.yahoo.com/quote/" + symbol}, now)
             with self.store.connect() as db:
                 db.execute("INSERT OR REPLACE INTO coverage VALUES(?,?,'success',NULL,NULL,?,NULL)", (symbol, "metadata", stamp(now)))

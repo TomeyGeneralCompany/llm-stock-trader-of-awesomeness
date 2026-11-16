@@ -264,3 +264,20 @@ def test_missing_publication_date_remains_unknown(tmp_path):
     with store.connect() as db:
         row=db.execute("SELECT published,available FROM document_versions").fetchone()
         assert row["published"] is None and row["available"]==stamp(WHEN)
+
+
+
+def test_catalyst_prioritizes_acquisition_without_inventing_a_base_price(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    intel.research.step(WHEN)
+    assert intel.priority_symbols(WHEN)==["AAA"]
+    with intel.store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM market_forecasts").fetchone()[0]==0
+        assert db.execute("SELECT status FROM market_research_waits").fetchone()[0]=="waiting_price"
+    later=WHEN+timedelta(minutes=1)
+    intel.store.observe("AAA","5m",later,dict(open=100,high=100,low=100,close=100,volume=100),later)
+    intel.resume_price_research(later)
+    with intel.store.connect() as db:
+        assert db.execute("SELECT status FROM market_research_waits").fetchone()[0]=="research_queued"
+        assert "priced in" in db.execute("SELECT question FROM research_tasks WHERE priority=3").fetchone()[0]

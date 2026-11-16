@@ -32,6 +32,8 @@ def run(directory, network=False):
     intel.store.archive(url="https://example.org/synthetic-demo-orders", publisher="Synthetic fixture",
         title="DEMO Widgets synthetic order and supplier scenario", text=text,
         published=now-timedelta(hours=1), acquired=now, language="en")
+    with intel.store.connect() as db:
+        db.execute("UPDATE research_tasks SET question=?", ("For this explicitly synthetic scenario, investigate the supplier relationship and opposing cost effects, and formulate one measurable conditional hypothesis for DEMO with explicit assumptions and uncertainty.",))
     result = intel.research.step(now)
     if not result or not result["findings"] or not result["hypotheses"]:
         raise ValueError("Real Qwen did not produce an evidence-grounded measurable hypothesis.")

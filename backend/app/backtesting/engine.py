@@ -357,6 +357,8 @@ class CustomBacktestEngine:
             max_shares_per_trade=self.config.max_shares_per_trade,
             liquidate_at_end=liquidate_at_end,
         )
+        if not self.config.trade_on_open:
+            raise ValueError("Historical close decisions require next-open execution; same-bar close fills are unavailable.")
         if self.config.trading_mode != TradingMode.LONG_ONLY:
             raise ValueError("The historical execution ledger currently supports long-only trading.")
         gates = gates or StageGateController(

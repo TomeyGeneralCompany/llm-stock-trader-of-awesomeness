@@ -59,10 +59,29 @@ TABLES = {
     "learned_lessons": "id TEXT PRIMARY KEY, symbol TEXT, available TEXT, body TEXT",
     "coverage": "symbol TEXT, kind TEXT, status TEXT, earliest TEXT, latest TEXT, last_success TEXT, error TEXT, PRIMARY KEY(symbol,kind)",
     "intelligence_events": "id INTEGER PRIMARY KEY, stamp TEXT, stage TEXT, body TEXT",
+    "market_research_waits": "hypothesis TEXT, symbol TEXT, status TEXT, task TEXT, PRIMARY KEY(hypothesis,symbol)",
     "intelligence_state": "key TEXT PRIMARY KEY, value TEXT",
     "research_runs": "id TEXT PRIMARY KEY, task TEXT, available TEXT, prompt TEXT, response TEXT, status TEXT, error TEXT",
     "paper_audit": "id TEXT PRIMARY KEY, available TEXT, body TEXT",
 }
+
+
+def classify_event(value):
+    text = value.lower()
+    categories = [
+        ("bankruptcy", ("bankrupt", "insolvency")), ("merger", ("merger", "acquisition", "takeover")),
+        ("regulation", ("regulat", "antitrust")), ("legislation", ("legislat", "bill signed")),
+        ("rates", ("interest rate", "federal funds", "monetary policy", "rate hike", "rate cut")),
+        ("labor", ("strike", "labor", "layoff")), ("conflict", ("conflict", "war ", "sanction")),
+        ("shipping", ("shipping", "freight", "port closure")), ("disaster", ("earthquake", "hurricane", "flood", "wildfire")),
+        ("shortage", ("shortage", "scarcity")), ("earnings", ("earnings", "quarterly results")),
+        ("launch", ("launch", "unveil")), ("resignation", ("resign", "steps down")),
+        ("technology", ("technology", "semiconductor")), ("demand", ("demand", "orders", "order growth", "order increase")),
+    ]
+    for category, terms in categories:
+        if category == text or any(term in text for term in terms):
+            return category
+    return text if text in {item[0] for item in categories} else "unclassified"
 
 
 class IntelligenceStore:
@@ -138,12 +157,12 @@ class IntelligenceStore:
 
     def observations(self, symbol, now, interval="5m", limit=5000):
         with self.connect() as db:
-            rows = db.execute("""SELECT end,body FROM (
-                SELECT end,body,ROW_NUMBER() OVER(PARTITION BY end ORDER BY acquired DESC,rowid DESC) rank
+            rows = db.execute("""SELECT end,body,session FROM (
+                SELECT end,body,session,ROW_NUMBER() OVER(PARTITION BY end ORDER BY acquired DESC,rowid DESC) rank
                 FROM market_observations WHERE symbol=? AND interval=? AND end<=? AND acquired<=?)
                 WHERE rank=1 ORDER BY end DESC LIMIT ?""",
                 (symbol, interval, stamp(now), stamp(now), limit)).fetchall()
-        return [{"end": row["end"], **json.loads(row["body"])} for row in reversed(rows)]
+        return [{"end": row["end"], "session": row["session"], **json.loads(row["body"])} for row in reversed(rows)]
 
     def archive(self, *, url, publisher, title, text, published, acquired, event_time=None,
                 language="und", payload=None, chunk_chars=768, overlap=96):
@@ -169,7 +188,7 @@ class IntelligenceStore:
                     if SequenceMatcher(None, normalized, re.sub(r"\W+", " ", row["title"].lower()).strip()).ratio() >= .92:
                         event = row["id"]
                         break
-            db.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)", (event, title, "unclassified", available))
+            db.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)", (event, title, classify_event(title+" "+text[:500]), available))
             db.execute("INSERT OR IGNORE INTO documents VALUES(?,?,?,?,?)", (doc, url, publisher, title, event))
             db.execute("INSERT INTO document_versions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                        (version, doc, published, acquired, acquired if prior else None, available,

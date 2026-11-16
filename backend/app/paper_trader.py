@@ -666,6 +666,8 @@ def main():
                 refreshed = now.astimezone(EASTERN).date()
             if not universe:
                 raise ValueError("Empty configured market universe")
+            if intelligence is not None:
+                watch = sorted(set(watch+[symbol for symbol in intelligence.priority_symbols(now) if symbol in universe]))
             cursor %= len(universe)
             scan = (universe+universe)[cursor:cursor+min(args.batch,len(universe))]
             with stage_resources("ACQUIRE"):

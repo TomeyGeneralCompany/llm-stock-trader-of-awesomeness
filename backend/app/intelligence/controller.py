@@ -43,13 +43,14 @@ class IntelligenceController:
             with self.lock:
                 # Holdings/pending plans can accelerate their evidence acquisition.
                 with self.store.connect() as db:
-                    db.execute("INSERT OR REPLACE INTO intelligence_state VALUES(?,?)", ("priority_symbols", dump(list(priority))))
+                    db.execute("INSERT OR REPLACE INTO intelligence_state VALUES(?,?)", ("priority_symbols", dump(list(dict.fromkeys(list(priority)+self.priority_symbols(now))))))
                     for symbol in priority:
                         db.execute("UPDATE acquisition_jobs SET due=? WHERE kind='market' AND json_extract(payload,'$.symbol')=? AND status='queued'", (now, symbol))
                 acquired = 0
                 if acquire:
                     with stage_resources("ACQUIRE"):
                         acquired = self.acquisition.process(now, self.config.INTELLIGENCE_NETWORK_JOBS)
+                self.resume_price_research(now)
                 self.evaluate(now)
                 result = None
                 if research:
@@ -63,6 +64,34 @@ class IntelligenceController:
                 return {"status": "processed", "acquired_jobs": acquired, "research_progress": bool(result)}
         except Timeout:
             return {"status": "busy"}
+
+    def priority_symbols(self, now):
+        now = stamp(now)
+        with self.store.connect() as db:
+            rows = db.execute("SELECT available,body FROM causal_hypotheses WHERE available<=? ORDER BY available DESC LIMIT 100", (now,)).fetchall()
+        symbols = []
+        for row in rows:
+            hypothesis = json.loads(row["body"])
+            if datetime.fromisoformat(row["available"])+timedelta(minutes=hypothesis["horizon_minutes"]) >= datetime.fromisoformat(now):
+                symbols.extend(hypothesis["affected_symbols"])
+        return list(dict.fromkeys(symbols))[:32]
+
+    def resume_price_research(self, now):
+        now = stamp(now)
+        with self.store.connect() as db:
+            rows = db.execute("""SELECT w.hypothesis,w.symbol,h.event FROM market_research_waits w
+                JOIN causal_hypotheses h ON w.hypothesis=h.id WHERE w.status='waiting_price' AND h.available<=? LIMIT 100""", (now,)).fetchall()
+        for row in rows:
+            if not self.store.observations(row["symbol"], now):
+                continue
+            task = sha("priced-in:"+row["hypothesis"]+row["symbol"])
+            with self.store.connect() as db:
+                db.execute("INSERT OR IGNORE INTO research_tasks VALUES(?,?,?,?,?,?,?,?,?,?)",
+                           (task,row["event"],"Fresh market observations are now available for "+row["symbol"]+
+                            ". Reassess original hypothesis "+row["hypothesis"]+" and whether the event is already priced in; use the current available quote, not an invented earlier price.",
+                            "queued",3.,now,None,0,dump({"hypothesis":row["hypothesis"]}),None))
+                db.execute("UPDATE market_research_waits SET status='research_queued',task=? WHERE hypothesis=? AND symbol=?", (task,row["hypothesis"],row["symbol"]))
+            self.store.log("QUEUE", {"task":task,"reason":"new market evidence"}, now)
 
     def evaluate(self, now):
         now = stamp(now)
@@ -93,6 +122,7 @@ class IntelligenceController:
                     hypothesis = db.execute("SELECT event FROM causal_hypotheses WHERE id=?", (row["hypothesis"],)).fetchone()
                     db.execute("INSERT OR IGNORE INTO research_tasks VALUES(?,?,?,?,?,?,?,?,?,?)",
                                (task, hypothesis[0] if hypothesis else "", "Investigate forecast discrepancy " + row["id"] + "; distinguish acquisition, interpretation, relationship, direction, magnitude, timing, allocation and execution causes using evidence.", "queued", 2., now, None, 0, "[]", None))
+            self.store.log("REVIEW", {"forecast": row["id"], "absolute_error": result["absolute_error"], "direction_correct": result["direction_correct"]}, now)
             self.store.log("MEMORY", {"forecast": row["id"], "lesson": lesson_id}, now)
 
     def lessons(self, symbol, now, limit=3):
@@ -127,7 +157,7 @@ class IntelligenceController:
                 output = candidate
         for lesson in self.lessons(symbol, now):
             item = {"actual_return": lesson.get("actual_return"), "absolute_error": lesson.get("absolute_error"),
-                    "direction_correct": lesson.get("direction_correct"), "error_classes": lesson.get("error_classes")}
+                    "direction_correct": lesson.get("direction_correct"), "error_classes": lesson.get("error_classes"), "kind": lesson.get("kind", "forecast"), "outcome": lesson.get("outcome")}
             candidate = {**output, "lessons": output["lessons"]+[item]}
             if len(dump(candidate).encode()) <= max_bytes:
                 output = candidate
@@ -150,7 +180,14 @@ class IntelligenceController:
             body = dump(event)
             ident = sha(body)
             with self.store.connect() as db:
-                db.execute("INSERT OR IGNORE INTO paper_audit VALUES(?,?,?)", (ident, stamp(now), body))
+                inserted = db.execute("INSERT OR IGNORE INTO paper_audit VALUES(?,?,?)", (ident, stamp(now), body)).rowcount
+                detail = event.get("detail", {})
+                if inserted and detail.get("symbol") and event.get("kind") in ("fill", "unfilled", "expired", "order_not_queued", "analysis_error"):
+                    error_class = "execution" if event["kind"] in ("unfilled", "expired") else "allocation" if event["kind"]=="order_not_queued" else "interpretation" if event["kind"]=="analysis_error" else None
+                    lesson = {"kind": "paper_execution", "event": event, "error_classes": [error_class] if error_class else [],
+                              "outcome": detail.get("realized_pnl"), "causal_interpretation": "Observed paper processing/execution result; economic cause is not inferred.",
+                              "available_at_decision": event.get("time")}
+                    db.execute("INSERT OR IGNORE INTO learned_lessons VALUES(?,?,?,?)", (sha("paper:"+ident), detail["symbol"], stamp(now), dump(lesson)))
 
     def overview(self, now=None):
         now = stamp(now)
