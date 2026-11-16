@@ -44,6 +44,7 @@ TABLES = {
     "security_versions": "symbol TEXT, available TEXT, body TEXT, hash TEXT, PRIMARY KEY(symbol,available,hash)",
     "market_observations": "symbol TEXT, interval TEXT, end TEXT, acquired TEXT, session TEXT, body TEXT, hash TEXT, PRIMARY KEY(symbol,interval,end,hash)",
     "documents": "id TEXT PRIMARY KEY, url TEXT UNIQUE, publisher TEXT, title TEXT, event_id TEXT",
+    "source_payloads": "id TEXT PRIMARY KEY, acquired TEXT, body BLOB, hash TEXT",
     "document_versions": "id TEXT PRIMARY KEY, document TEXT, published TEXT, acquired TEXT, revised TEXT, available TEXT, event_time TEXT, hash TEXT, original_text TEXT, original_payload BLOB, language TEXT, UNIQUE(document,hash)",
     "document_chunks": "id TEXT PRIMARY KEY, version TEXT, ordinal INTEGER, start INTEGER, end INTEGER, body TEXT, hash TEXT",
     "entities": "id TEXT PRIMARY KEY, name TEXT, kind TEXT, symbol TEXT, evidence TEXT, available TEXT",
@@ -154,6 +155,9 @@ class IntelligenceStore:
         version = sha(doc + content_hash)
         normalized = re.sub(r"\W+", " ", title.lower()).strip()
         with self.connect() as db:
+            raw = payload if payload is not None else text.encode()
+            payload_id = sha(raw)
+            db.execute("INSERT OR IGNORE INTO source_payloads VALUES(?,?,?,?)", (payload_id, acquired, raw, payload_id))
             if db.execute("SELECT 1 FROM document_versions WHERE id=?", (version,)).fetchone():
                 return version
             prior = db.execute("SELECT event_id FROM documents WHERE id=?", (doc,)).fetchone()
@@ -166,10 +170,10 @@ class IntelligenceStore:
                         break
             db.execute("INSERT OR IGNORE INTO events VALUES(?,?,?,?)", (event, title, "unclassified", available))
             db.execute("INSERT OR IGNORE INTO documents VALUES(?,?,?,?,?)", (doc, url, publisher, title, event))
-            db.execute("INSERT INTO document_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO document_versions VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                        (version, doc, published, acquired, acquired if prior else None, available,
                         stamp(event_time) if event_time else published, content_hash, text,
-                        payload if payload is not None else text.encode(), language))
+                        ("source_payload:"+payload_id).encode(), language))
             db.execute("INSERT INTO event_evidence VALUES(?,?,?)", (event, version, "unassessed"))
             for ordinal, start in enumerate(range(0, len(text), chunk_chars - overlap)):
                 body = text[start:start + chunk_chars]

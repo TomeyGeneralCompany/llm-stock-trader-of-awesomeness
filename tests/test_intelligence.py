@@ -191,3 +191,53 @@ def test_untrusted_xml_and_private_network_are_rejected():
         parse_feed(b'<!DOCTYPE rss [<!ENTITY x SYSTEM "file:///etc/passwd">]><rss/>', "https://example.org", WHEN)
     with pytest.raises(ValueError):
         public_url("https://127.0.0.1/news", {"127.0.0.1"})
+
+
+
+def test_metadata_versions_do_not_leak_new_securities_or_industry(tmp_path):
+    store = IntelligenceStore(tmp_path/"archive.db")
+    store.security("AAA", {"company": "AAA Widgets", "industry": "Old sector"}, WHEN)
+    store.security("AAA", {"industry": "New sector"}, WHEN+timedelta(days=1))
+    store.security("NEW", {"company": "New listing"}, WHEN+timedelta(days=1))
+    assert store.catalog(WHEN)["AAA"]["industry"] == "Old sector"
+    assert "NEW" not in store.catalog(WHEN)
+    assert store.catalog(WHEN+timedelta(days=2))["AAA"]["industry"] == "New sector"
+
+
+def test_original_payloads_are_deduplicated_without_losing_document_text(tmp_path):
+    store = IntelligenceStore(tmp_path/"archive.db")
+    for index in range(2):
+        store.archive(url=f"https://example.org/{index}",publisher="example.org",title=f"AAA {index}",
+            text=TEXT+str(index),published=WHEN,acquired=WHEN,payload=b"one shared feed response")
+    with store.connect() as db:
+        assert db.execute("SELECT COUNT(*) FROM source_payloads").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM document_versions").fetchone()[0] == 2
+        assert db.execute("SELECT body FROM source_payloads").fetchone()[0] == b"one shared feed response"
+
+
+def test_source_response_bound_and_private_destinations(monkeypatch):
+    import httpx
+    from app.intelligence import sources
+    original = httpx.Client
+    monkeypatch.setattr(sources, "public_url", lambda url, domains: url)
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: original(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"x"*2048)), **kwargs))
+    with pytest.raises(ValueError, match="bound"):
+        sources.PublicFetcher("fixture", 1024)("https://example.org/feed", {"example.org"})
+
+
+def test_intelligence_endpoints_are_read_only_and_asof_scoped(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.api.v1.endpoints import intelligence as api
+    path = tmp_path/"archive.db"
+    monkeypatch.setattr(settings, "INTELLIGENCE_DB_PATH", str(path))
+    assert api.status()["status"] == "waiting" and not path.exists()
+    store = IntelligenceStore(path)
+    version = store.archive(url="https://example.org/aaa",publisher="example.org",title="AAA evidence",
+        text=TEXT,published=WHEN,acquired=WHEN)
+    chunk = store.retrieve("AAA", WHEN)[0]
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        api.evidence(chunk["id"], stamp(WHEN-timedelta(seconds=1)))
+    assert error.value.status_code == 404
+    assert api.evidence(chunk["id"], stamp(WHEN))["body"] == chunk["body"]
+    assert api.original(version, stamp(WHEN))["original_text"] == TEXT
