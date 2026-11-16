@@ -410,13 +410,8 @@ async def generate_retrospective_analysis(
     Generate retrospective analysis using LLM with deeper market insight.
     Optimized for performance and reliability.
     """
-    import asyncio
-
     try:
         print(f"🔍 Starting retrospective analysis: {day_data.date} {day_data.symbol}")
-
-        # Set timeout for the entire analysis process
-        timeout_seconds = 25  # Prevent hanging requests
 
         async def _generate_analysis():
             # Prepare context for LLM
@@ -495,13 +490,15 @@ Please use professional but concise language, keeping within 800 words. Highligh
                 context = f"Trading review analysis: {day_data.date} {day_data.symbol} - Data processing error"
 
             try:
-                # Initialize LLM client with optimized settings to prevent timeouts
+                # Use the shared local model and its configured inference timeout.
                 llm_client = get_llm_client(
                     temperature=0.8, max_tokens=1000
                 )  # Reduced token limit
 
-                # Get LLM response with timeout handling
-                response = llm_client.invoke(context + "\nWrite the entire response in English.")
+                # Keep the API event loop available while CPU inference runs.
+                response = await llm_client.ainvoke(
+                    context + "\nWrite the entire response in English."
+                )
                 commentary = (
                     response.content if hasattr(response, "content") else str(response)
                 )
@@ -519,14 +516,9 @@ Please use professional but concise language, keeping within 800 words. Highligh
                 print(f"❌ LLM invocation failed: {e}")
                 return f"LLM analysis generation failed: {str(e)}. Please try again later or contact technical support."
 
-        # Execute with timeout
-        try:
-            commentary = await asyncio.wait_for(
-                _generate_analysis(), timeout=timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            print(f"❌ Analysis timeout ({timeout_seconds} seconds)")
-            commentary = "Analysis processing timeout, please try again later. This may be due to network latency or high system load."
+        # The local client owns the timeout; a short cloud-era deadline would
+        # discard valid CPU inference while leaving it running in the background.
+        commentary = await _generate_analysis()
 
         try:
             print(f"📋 Building retrospective analysis results...")

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.llm.client import get_llm_client
+from app.llm.client import OllamaError, get_llm_client
 from app.utils.backtest_logger import BacktestLogger
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -244,7 +244,7 @@ Use the following format:
 
         # Get LLM response
         llm_client = get_llm_client(temperature=0.7, max_tokens=1500)
-        response = llm_client.invoke(context)
+        response = await llm_client.ainvoke(context)
         response_text = (
             response.content if hasattr(response, "content") else str(response)
         )
@@ -257,6 +257,8 @@ Use the following format:
             suggestions=analysis_parts.get("suggestions", ["Please try again later"]),
         )
 
+    except OllamaError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except Exception as e:
         print(f"❌ LLM Analysis error: {e}")
         # Return fallback response

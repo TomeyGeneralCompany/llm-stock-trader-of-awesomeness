@@ -446,7 +446,12 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date }) => 
       })
 
       if (!response.ok) {
-        throw new Error(`A problem occurred during the discussion: ${response.status}`)
+        const failure = await response.json().catch(() => null)
+        throw new Error(
+          typeof failure?.detail === 'string'
+            ? failure.detail
+            : `A problem occurred during the discussion: ${response.status}`
+        )
       }
 
       const data: DailyImprovementResponse = await response.json()

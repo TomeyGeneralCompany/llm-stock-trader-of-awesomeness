@@ -2,6 +2,8 @@
 
 The dashboard, analysis prompts, logs, comments, and documentation use English. Dates and numbers in the interface use the `en-US` locale.
 
+All AI features use the local Ollama model configured in `.env`, defaulting to `qwen3:4b`. Start your existing Ollama service before running a backtest. See the README for the model tag, context, thread, thinking, and timeout settings.
+
 ## Backtest Setup
 
 Open `http://localhost:3000` after starting the application.

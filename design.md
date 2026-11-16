@@ -22,7 +22,7 @@ flowchart TD
     
     %% LLM Strategy engine
     C --> H[LLM Smart strategy]
-    H --> I[Azure OpenAI<br/>GPT-4]
+    H --> I[Local Ollama<br/>Qwen 3 4B]
     H --> J[Technical analysis engine]
     H --> K[Risk management module]
     
@@ -97,7 +97,7 @@ flowchart TD
     A --> C[Technical indicator calculation]
     A --> D[Trend identification]
     
-    B --> E[Azure OpenAI API]
+    B --> E[Local Ollama API]
     C --> F[Moving averages<br/>MACD, RSI, Bollinger Bands]
     D --> G[Short-term/Medium-term/Long-term trends]
     
@@ -160,7 +160,7 @@ flowchart TD
 
 ### 1. LLM Decision engine
 - **Input**: Market data, Technical indicators, Historical trends
-- **Processing**: Azure OpenAI GPT-4 Reasoning analysis
+- **Processing**: Local Qwen 3 reasoning through Ollama
 - **Output**: Trading decisions, Confidence, Reasoning process
 
 ### 2. Technical analysis module
@@ -193,7 +193,7 @@ flowchart TD
 ### Backend technologies
 - **API Framework**: FastAPI (Python)
 - **Database**: SQLite
-- **LLM Integration**: Azure OpenAI API
+- **LLM Integration**: Local Ollama API
 - **Data source**: Yahoo Finance (yfinance)
 
 ### Development and operations
@@ -204,7 +204,7 @@ flowchart TD
 ## System features
 
 1. **Real-time streaming backtests**: Providing real-time progress updates using Server-Sent Events
-2. **Intelligent decision analysis**: Uses GPT-4 for in-depth market analysis
+2. **Intelligent decision analysis**: Uses local Qwen 3 for in-depth market analysis
 3. **Interactive feedback**: Supports user feedback and improvement suggestions for historical decisions
 4. **Comprehensive technical analysis**: Multidimensional technical indicators and trend identification
 5. **Historical data analysis**: Supports complex backtest queries and retrospective analysis
@@ -216,3 +216,11 @@ flowchart TD
 - **Pluggable strategies**: Supports multiple trading strategies in parallel
 - **Multiple data sources**: Can be extended to support additional financial data providers
 - **Flexible deployment**: Supports local development and cloud deployment
+
+## Local Model Integration
+
+All AI features share the native Ollama chat client in `backend/app/llm/client.py`. The default model is `qwen3:4b` at `http://127.0.0.1:11434`. No cloud model SDKs or model API keys are required.
+
+The client maintains the application's `response.content` interface. Trading decisions request JSON output; daily feedback and retrospective reviews request English prose. Async API handlers offload local inference to a worker thread. A shared lock allows one inference request at a time per backend process.
+
+The default context is 8192 tokens, inference uses four threads, and the model stays loaded for 30 minutes after use. Qwen's direct-answer mode is the default; thinking is configurable. The read timeout defaults to unlimited, while connection failures have a five-second timeout. These settings are documented in `.env.example`.

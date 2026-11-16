@@ -1,170 +1,170 @@
-"""
-Unified LLM client for all modules
-"""
+"""Shared local Ollama client for trading decisions and analysis."""
 
-import os
-from typing import Literal, Optional, Union
+import asyncio
+import json
+import threading
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import AzureChatOpenAI
+import httpx
 
 from app.config import settings
 
+# All client instances share one inference slot in the backend process.
+# This includes backtests, retrospective analysis, and daily feedback.
+_inference_lock = threading.Lock()
 
-def _detect_available_provider() -> Literal["azure", "gemini"]:
-    """
-    Auto-detect which LLM provider to use based on available API keys in .env
 
-    Returns:
-        "gemini" if only GOOGLE_API_KEY is available and uncommented
-        "azure" if AZURE_OPENAI_API_KEY is available and uncommented
-        Prioritizes Azure when both are available
-        Defaults to "azure" for backward compatibility
-    """
-    # Read directly from environment variables (not from settings)
-    # This allows users to comment out keys in .env to disable providers
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+class OllamaError(RuntimeError):
+    """A local model request failed or did not return a complete answer."""
 
-    # Check if keys are properly set and not placeholder values
-    azure_available = (
-        azure_api_key
-        and azure_api_key.strip()
-        and azure_api_key not in ["your_azure_api_key_here", "", "none", "null"]
+
+@dataclass(frozen=True)
+class LLMResponse:
+    """Keep the response.content interface used by the application."""
+
+    content: str
+
+
+@dataclass
+class LLMClientConfig:
+    """Local model configuration, with environment-backed defaults."""
+
+    provider: Literal["ollama"] = "ollama"
+    model: str = field(default_factory=lambda: settings.OLLAMA_MODEL)
+    base_url: str = field(default_factory=lambda: settings.OLLAMA_BASE_URL)
+    temperature: float = 0.1
+    max_tokens: int = 4000
+    num_ctx: int = field(default_factory=lambda: settings.OLLAMA_NUM_CTX)
+    num_thread: int = field(default_factory=lambda: settings.OLLAMA_NUM_THREAD)
+    keep_alive: str = field(default_factory=lambda: settings.OLLAMA_KEEP_ALIVE)
+    think: bool = field(default_factory=lambda: settings.OLLAMA_THINK)
+    timeout_seconds: float = field(
+        default_factory=lambda: settings.OLLAMA_TIMEOUT_SECONDS
     )
+    response_format: Optional[Literal["json"]] = None
 
-    gemini_available = (
-        google_api_key
-        and google_api_key.strip()
-        and google_api_key not in ["your_google_api_key_here", "", "none", "null"]
-    )
+    def __post_init__(self) -> None:
+        if self.provider != "ollama":
+            raise ValueError("Only the local Ollama provider is supported.")
+        self.model = self.model.strip()
+        self.base_url = self.base_url.strip().rstrip("/")
+        if not self.model or not self.base_url:
+            raise ValueError("Ollama model and base URL must not be empty.")
+        if min(self.max_tokens, self.num_ctx, self.num_thread) < 1:
+            raise ValueError("Token, context, and thread limits must be positive.")
+        if self.timeout_seconds < 0:
+            raise ValueError("Ollama timeout must be zero or positive.")
+        if self.response_format not in (None, "json"):
+            raise ValueError("Ollama response format must be 'json' or None.")
 
-    # Priority logic: Azure first (for backward compatibility), then Gemini
-    if azure_available:
-        return "azure"
-    elif gemini_available:
-        return "gemini"
-    else:
-        # Default to azure for backward compatibility
-        return "azure"
+    def create_client(self) -> "OllamaClient":
+        """Create a client without making a network request or loading a model."""
+        return OllamaClient(self)
+
+
+class OllamaClient:
+    """Call Ollama's native chat endpoint; no cloud credentials are used."""
+
+    def __init__(self, config: LLMClientConfig):
+        self.config = config
+
+    def invoke(self, prompt: str) -> LLMResponse:
+        """Return the completed answer, excluding Ollama's separate thinking field."""
+        config = self.config
+        payload = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "think": config.think,
+            "keep_alive": config.keep_alive,
+            "options": {
+                "temperature": config.temperature,
+                "num_predict": config.max_tokens,
+                "num_ctx": config.num_ctx,
+                "num_thread": config.num_thread,
+            },
+        }
+        if config.response_format:
+            payload["format"] = config.response_format
+
+        # Zero means no read deadline for slow CPU inference. Connection and
+        # write failures still have finite timeouts and actionable errors.
+        timeout = httpx.Timeout(
+            config.timeout_seconds or None, connect=5.0, write=30.0, pool=5.0
+        )
+        try:
+            with _inference_lock:
+                # Ignore proxy environment variables for this local connection.
+                with httpx.Client(timeout=timeout, trust_env=False) as client:
+                    response = client.post(f"{config.base_url}/api/chat", json=payload)
+                    response.raise_for_status()
+        except httpx.ConnectError as exc:
+            raise OllamaError(
+                f"Cannot connect to Ollama at {config.base_url}. "
+                "Start Ollama with 'ollama serve' and check OLLAMA_BASE_URL."
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise OllamaError(
+                "Ollama request timed out. Check that Ollama is running; "
+                "increase OLLAMA_TIMEOUT_SECONDS or set it to 0 for no read deadline."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise OllamaError(
+                    f"Ollama model '{config.model}' was not found. "
+                    f"Run 'ollama pull {config.model}' and check OLLAMA_BASE_URL."
+                ) from exc
+            raise OllamaError(
+                f"Ollama returned HTTP {exc.response.status_code}. "
+                "Check the local Ollama server logs."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise OllamaError(f"Local Ollama request failed: {exc}") from exc
+
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("Expected an object")
+            if data.get("error"):
+                raise OllamaError(f"Ollama error: {data['error']}")
+            if data.get("done") is not True:
+                raise OllamaError("Ollama did not return a completed answer.")
+            if data.get("done_reason") == "length":
+                raise OllamaError(
+                    "Ollama reached the response token limit before finishing. "
+                    "Use OLLAMA_THINK=false or increase the caller's max_tokens."
+                )
+            content = data["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise OllamaError("Ollama returned an empty answer.")
+            if config.response_format == "json":
+                json.loads(content)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise OllamaError("Ollama returned an invalid response.") from exc
+
+        return LLMResponse(content=content.strip())
+
+    async def ainvoke(self, prompt: str) -> LLMResponse:
+        """Run local inference without blocking FastAPI's event loop."""
+        return await asyncio.to_thread(self.invoke, prompt)
 
 
 def get_llm_client(
-    provider: Optional[Literal["azure", "gemini"]] = None,
+    provider: Optional[Literal["ollama"]] = None,
     temperature: float = 0.1,
     max_tokens: int = 4000,
     **kwargs,
-) -> Union[AzureChatOpenAI, ChatGoogleGenerativeAI]:
-    """
-    Get unified LLM client with automatic provider detection
-
-    Args:
-        provider: LLM provider - "azure" for Azure OpenAI or "gemini" for Google Gemini
-                 If None, auto-detects based on available API keys in .env
-        temperature: Temperature parameter
-        max_tokens: Maximum number of tokens
-        **kwargs: Other provider-specific parameters
-
-    Returns:
-        LLM client instance (AzureChatOpenAI or ChatGoogleGenerativeAI)
-    """
-    # Auto-detect provider if not specified
-    if provider is None:
-        provider = _detect_available_provider()
-
-    if provider == "gemini":
-        return ChatGoogleGenerativeAI(
-            model=settings.GEMINI_MODEL,
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-            google_api_key=os.getenv("GOOGLE_API_KEY"),
-            **kwargs,
-        )
-    else:  # azure
-        return AzureChatOpenAI(
-            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT_NAME,
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_version=settings.AZURE_OPENAI_API_VERSION,
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            **kwargs,
-        )
+) -> OllamaClient:
+    """Create the local Qwen client used by all application AI features."""
+    return LLMClientConfig(
+        provider=provider or "ollama",
+        temperature=temperature,
+        max_tokens=max_tokens,
+        **kwargs,
+    ).create_client()
 
 
-class LLMClientConfig:
-    """LLM Client Configuration Class"""
-
-    def __init__(
-        self,
-        provider: Optional[Literal["azure", "gemini"]] = None,
-        # Azure OpenAI specific
-        deployment_name: Optional[str] = None,
-        endpoint: Optional[str] = None,
-        api_version: Optional[str] = None,
-        api_key: Optional[str] = None,
-        # Gemini specific
-        google_api_key: Optional[str] = None,
-        model: str = None,
-        # Common parameters
-        temperature: float = 0.1,
-        max_tokens: int = 4000,
-    ):
-        # Auto-detect provider if not specified
-        self.provider = (
-            provider if provider is not None else _detect_available_provider()
-        )
-
-        # Azure OpenAI configuration
-        self.deployment_name = deployment_name or settings.AZURE_OPENAI_DEPLOYMENT_NAME
-        self.endpoint = endpoint or settings.AZURE_OPENAI_ENDPOINT
-        self.api_version = api_version or settings.AZURE_OPENAI_API_VERSION
-        self.api_key = api_key or settings.AZURE_OPENAI_API_KEY
-
-        # Gemini configuration
-        self.google_api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
-        self.model = model or settings.GEMINI_MODEL
-
-        # Common parameters
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-
-    def create_client(self) -> Union[AzureChatOpenAI, ChatGoogleGenerativeAI]:
-        """Create client instance based on provider"""
-        if self.provider == "gemini":
-            return ChatGoogleGenerativeAI(
-                model=self.model,
-                temperature=self.temperature,
-                max_output_tokens=self.max_tokens,
-                google_api_key=self.google_api_key,
-            )
-        else:  # Azure OpenAI
-            return AzureChatOpenAI(
-                azure_deployment=self.deployment_name,
-                azure_endpoint=self.endpoint,
-                api_version=self.api_version,
-                api_key=self.api_key,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            )
-
-
-# Default configuration instance
-default_config = LLMClientConfig()
-
-
-def get_configured_client(
-    config: Optional[LLMClientConfig] = None,
-) -> Union[AzureChatOpenAI, ChatGoogleGenerativeAI]:
-    """
-    Get client using configuration
-
-    Args:
-        config: LLM client configuration
-
-    Returns:
-        Configured LLM client (Azure OpenAI or Google Gemini)
-    """
-    if config is None:
-        config = default_config
-    return config.create_client()
+def get_configured_client(config: Optional[LLMClientConfig] = None) -> OllamaClient:
+    """Create a client using explicit configuration or current local defaults."""
+    return (config or LLMClientConfig()).create_client()

@@ -18,7 +18,7 @@ from ...utils.indicators import calculate_bollinger_bands, calculate_macd
 from ...utils.unrealized_pnl_tracker import UnrealizedPnLTracker
 from ..analysis.enhanced_technical_analyzer import EnhancedTechnicalAnalyzer
 from ..analysis.trend_analyzer import EnhancedTrendAnalyzer
-from ..client import get_llm_client
+from ..client import OllamaError, get_llm_client
 from .base import (
     ParameterSpec,
     ParameterType,
@@ -43,7 +43,7 @@ class LLMSmartStrategy(TradingStrategy):
 
     def __init__(self, config: StrategyConfig):
         super().__init__(config)
-        self.llm_client = get_llm_client(temperature=0.1)
+        self.llm_client = get_llm_client(temperature=0.1, response_format="json")
         self.trend_analyzer = EnhancedTrendAnalyzer()
         self.enhanced_analyzer = EnhancedTechnicalAnalyzer()
 
@@ -2330,6 +2330,10 @@ Please respond in JSON format with your decision:
 
             return decision
 
+        except OllamaError:
+            # Surface a missing model or server to the backtest stream instead
+            # of treating unavailable inference as a valid no-trade decision.
+            raise
         except Exception as e:
             print(f"❌ LLM decision error: {e}")
             import traceback

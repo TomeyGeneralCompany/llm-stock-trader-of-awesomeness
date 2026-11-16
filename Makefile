@@ -41,6 +41,9 @@ check:
 unit-test:
 	uv run pytest 
 
+test:
+	uv run pytest tests -q
+
 integration-test:
 	uv run ./test/main.py
 
