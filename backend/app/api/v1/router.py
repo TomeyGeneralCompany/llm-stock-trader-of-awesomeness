@@ -5,7 +5,7 @@ Includes all endpoint routers for version 1 of the API.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import backtest_analysis, daily_feedback, llm_stream
+from app.api.v1.endpoints import backtest_analysis, daily_feedback, llm_stream, paper_status
 
 api_router = APIRouter()
 
@@ -17,3 +17,5 @@ api_router.include_router(
 api_router.include_router(
     daily_feedback.router, prefix="/daily", tags=["daily-feedback"]
 )
+
+api_router.include_router(paper_status.router, prefix="/paper", tags=["paper-trader"])

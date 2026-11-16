@@ -15,6 +15,10 @@ Model prompts now use [chunked evidence and tiered memory](docs/memory-and-chunk
 
 Trader responses explain observed state, interpretation, forecasts, and conditional actions. Future scenarios remain allowed when their assumptions, timeframes, evidence and position prerequisites are explicit.
 
+## Autonomous paper trading
+
+The forward trader runs a rotating US listed-symbol scanner, maintains a persistent multi-symbol simulated account, and re-evaluates conditional forecasts on fresh completed market observations. Its default operating objective is **$1 to $100 in one trading session**, measured by realized flat account balance. See [autonomous paper trader](docs/paper-trader.md) for controls, replay, assumptions, and operating instructions.
+
 ## System Architecture
 
 ```mermaid
