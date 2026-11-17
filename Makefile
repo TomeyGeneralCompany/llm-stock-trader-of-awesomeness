@@ -10,13 +10,13 @@ install:
 run:
 	@echo "Starting LLM Agent Trader..."
 	@echo "Starting backend server..."
-	@cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 &
+	@cd backend && uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 &
 	@sleep 3
 	@echo "Starting frontend server..."
 	@cd frontend && npm run dev &
-	@echo "Backend running at: http://localhost:8000"
-	@echo "Frontend running at: http://localhost:3000"
-	@echo "API docs available at: http://localhost:8000/docs"
+	@echo "Backend running at: http://127.0.0.1:8000"
+	@echo "Frontend running at: http://127.0.0.1:3000"
+	@echo "Local backend docs at: http://127.0.0.1:8000/docs"
 	@echo "Press Ctrl+C to stop all services"
 	@wait
 

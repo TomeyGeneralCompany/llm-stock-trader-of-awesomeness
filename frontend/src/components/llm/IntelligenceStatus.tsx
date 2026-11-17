@@ -29,7 +29,7 @@ export default function IntelligenceStatus() {
   const query = useQuery<Status>({
     queryKey: ['market-intelligence'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/v1/intelligence/status')
+      const response = await fetch('/api/v1/intelligence/status')
       if (!response.ok) throw new Error('Unable to load saved intelligence status')
       return response.json()
     },
@@ -38,7 +38,7 @@ export default function IntelligenceStatus() {
   const paper = useQuery<PaperStatus | null>({
     queryKey: ['paper-intelligence-paper-status'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/v1/paper/status')
+      const response = await fetch('/api/v1/paper/status')
       if (response.status === 404) return null
       if (!response.ok) throw new Error('Unable to load the local paper account')
       return response.json()
@@ -61,7 +61,7 @@ export default function IntelligenceStatus() {
             <strong>{item.symbol}</strong> · score {item.score.toFixed(4)}
             <p>{Object.entries(item.components || {}).map(([name, score]) => name + ' ' + score.toFixed(4)).join(' · ')}</p>
             <p>{item.historical_samples || 0} comparable observations · median dollar volume {item.median_dollar_volume?.toLocaleString() ?? 'unavailable'} · minutes remaining {item.minutes_remaining?.toFixed(0) ?? 'unavailable'}</p>
-            {item.catalysts.flatMap(catalyst => catalyst.evidence).map((evidence, index) => <a key={evidence.chunk_id + index} className="underline mr-3" href={'http://localhost:8000/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id) + '?asof=' + encodeURIComponent(paper.data?.ranked_at || item.bar)}>Evidence {index + 1}</a>)}
+            {item.catalysts.flatMap(catalyst => catalyst.evidence).map((evidence, index) => <a key={evidence.chunk_id + index} className="underline mr-3" href={'/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id) + '?asof=' + encodeURIComponent(paper.data?.ranked_at || item.bar)}>Evidence {index + 1}</a>)}
           </div>)}
         </details>
         <details className="border rounded p-3">
@@ -99,7 +99,7 @@ export default function IntelligenceStatus() {
           <summary>Forecasts and evidence</summary>
           {data.forecasts.map(forecast => {
             const body = JSON.parse(forecast.body) as { expected_return: number; confidence: number; invalidation: string; evidence: { chunk_id: string }[] }
-            return <div key={forecast.id} className="my-3 text-sm"><strong>{forecast.symbol}</strong>: {(body.expected_return * 100).toFixed(2)}% forecast · confidence {body.confidence} · {forecast.status}<p>Horizon ends {forecast.target}. Invalidation: {body.invalidation}</p>{body.evidence.map((evidence, index) => <a key={index} className="underline mr-3" href={'http://localhost:8000/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id)} target="_blank" rel="noreferrer">Evidence {index + 1}</a>)}</div>
+            return <div key={forecast.id} className="my-3 text-sm"><strong>{forecast.symbol}</strong>: {(body.expected_return * 100).toFixed(2)}% forecast · confidence {body.confidence} · {forecast.status}<p>Horizon ends {forecast.target}. Invalidation: {body.invalidation}</p>{body.evidence.map((evidence, index) => <a key={index} className="underline mr-3" href={'/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id)} target="_blank" rel="noreferrer">Evidence {index + 1}</a>)}</div>
           })}
         </details>
         <details className="border rounded p-3">

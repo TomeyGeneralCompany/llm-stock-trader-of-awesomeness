@@ -3,12 +3,13 @@ Application configuration management.
 Handles environment variables, local Ollama settings, and database configuration.
 """
 
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Optional
+from urllib.parse import urlsplit
 
 # Load environment variables
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Find .env file (project root)
@@ -20,6 +21,31 @@ else:
     load_dotenv(".env")
 
 
+def local_ollama_url(value: str) -> str:
+    """Accept only a loopback Ollama origin on the same machine."""
+    url = value.strip().rstrip("/")
+    parts = urlsplit(url)
+    host = parts.hostname
+    if host == "localhost":
+        loopback = True
+    else:
+        try:
+            loopback = ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if (
+        not loopback
+        or parts.scheme not in ("http", "https")
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError("OLLAMA_BASE_URL must be a local loopback origin.")
+    return url
+
+
 class Settings(BaseSettings):
     """Application settings."""
 
@@ -29,9 +55,6 @@ class Settings(BaseSettings):
 
     # CORS settings
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000"]
-
-    # Database settings (future use)
-    DATABASE_URL: Optional[str] = None
 
     # External API settings
     YFINANCE_TIMEOUT: int = 30
@@ -56,6 +79,11 @@ class Settings(BaseSettings):
     OLLAMA_THINK: bool = False
     OLLAMA_TIMEOUT_SECONDS: float = Field(default=0, ge=0)
 
+    @field_validator("OLLAMA_BASE_URL")
+    @classmethod
+    def validate_ollama_base_url(cls, value: str) -> str:
+        return local_ollama_url(value)
+
     # Separate additive intelligence archive; portfolio databases are untouched.
     INTELLIGENCE_ENABLED: bool = True
     INTELLIGENCE_DB_PATH: str = str(env_path.parent / "data" / "market-intelligence.sqlite3")
@@ -69,9 +97,6 @@ class Settings(BaseSettings):
     FRED_API_KEY: str = ""
 
     # Additional .env settings
-    REDIS_URL: Optional[str] = None
-    BACKEND_URL: Optional[str] = None
-    FRONTEND_URL: Optional[str] = None
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
 

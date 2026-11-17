@@ -15,6 +15,10 @@ Model prompts now use [chunked evidence and tiered memory](docs/memory-and-chunk
 
 Trader responses explain observed state, interpretation, forecasts, and conditional actions. Future scenarios remain allowed when their assumptions, timeframes, evidence and position prerequisites are explicit.
 
+## Local operation
+
+The dashboard and its backend listen on this computer only. The paper service, Ollama model, controller state, tiered evidence memory and research archive run locally. The default data directory holds the paper ledger, stage records, memory and market-intelligence SQLite files. Public market data and economic feeds are downloaded into that archive. The optional private GitHub status publisher sends a status snapshot only when started separately.
+
 ## Autonomous paper trading
 
 The forward trader runs a rotating US listed-symbol scanner, maintains a persistent multi-symbol simulated account, and re-evaluates conditional forecasts on fresh completed market observations. Its default operating objective is **$1 to $100 in one trading session**, measured by realized flat account balance. See [autonomous paper trader](docs/paper-trader.md) for controls, replay, assumptions, and operating instructions.
@@ -30,7 +34,7 @@ Historical backtests use a finite controller-owned portfolio, next-open fills, w
 ```mermaid
 flowchart TD
     %% User Interface Layer
-    A[Frontend - Next.js] --> B[API Gateway - FastAPI Backend]
+    A[Local browser dashboard] --> B[Local FastAPI interface]
     
     %% Main Function Modules
     B --> C[LLM Streaming Backtest Engine]
@@ -122,7 +126,7 @@ make run
 ```
 
 **🎉 Success!** After setup, open your browser and navigate to:
-**http://localhost:3000** to access the web application
+**http://127.0.0.1:3000** to access the web application
 
 ### Other Commands
 ```bash

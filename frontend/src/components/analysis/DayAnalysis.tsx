@@ -436,7 +436,7 @@ const DailyFeedbackSection: React.FC<DailyFeedbackSectionProps> = ({ date, runId
     setError(null)
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/daily/daily-feedback', {
+      const response = await fetch('/api/v1/daily/daily-feedback', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

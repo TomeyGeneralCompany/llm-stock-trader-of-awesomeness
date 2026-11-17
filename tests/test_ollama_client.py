@@ -63,6 +63,14 @@ def test_env_settings_and_old_env_file_are_compatible(tmp_path):
     assert config.OLLAMA_TIMEOUT_SECONDS == 900
 
 
+@pytest.mark.parametrize("remote", ["https://example.org", "http://192.168.1.4:11434", "http://0.0.0.0:11434"])
+def test_inference_cannot_target_a_nonlocal_host(remote):
+    with pytest.raises(ValueError, match="local loopback origin"):
+        Settings(_env_file=None, OLLAMA_BASE_URL=remote)
+    with pytest.raises(ValueError, match="local loopback origin"):
+        local_ai.get_llm_client(base_url=remote)
+
+
 def test_native_json_request_and_final_answer(mock_ollama):
     result = {"action": "HOLD", "confidence": 0.7, "reasoning": "Wait."}
     requests = []

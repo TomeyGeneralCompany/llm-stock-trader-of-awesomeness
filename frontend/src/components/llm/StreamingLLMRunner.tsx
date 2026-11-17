@@ -233,7 +233,7 @@ export default function StreamingLLMRunner() {
       min_commission: String(minCommission),
     })
 
-    const url = `http://localhost:8000/api/v1/llm-stream/llm-backtest-stream?${params}`
+    const url = `/api/v1/llm-stream/llm-backtest-stream?${params}`
     
     try {
       console.log('Create new EventSource:', url)
@@ -482,7 +482,7 @@ export default function StreamingLLMRunner() {
     if (!currentRunId) return
     setIsStopping(true)
     try {
-      const response = await fetch('http://localhost:8000/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId) + '/stop', { method: 'POST' })
+      const response = await fetch('/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId) + '/stop', { method: 'POST' })
       if (!response.ok) throw new Error('Unable to request a stop; try again after the run starts')
       setPipeline(await response.json())
       setCurrentStep('Stop requested. The current stage will finish and save its evidence.')
@@ -496,7 +496,7 @@ export default function StreamingLLMRunner() {
     if (!currentRunId) return
     setIsRefreshingStage(true)
     try {
-      const base = 'http://localhost:8000/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId)
+      const base = '/api/v1/llm-stream/runs/' + encodeURIComponent(currentRunId)
       const response = await fetch(base)
       if (!response.ok) throw new Error('Unable to load saved stage status')
       const saved: PipelineState = await response.json()

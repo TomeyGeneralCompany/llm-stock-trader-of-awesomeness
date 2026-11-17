@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 import httpx
 
-from app.config import settings
+from app.config import local_ollama_url, settings
 from app.llm.memory import prompt_budget
 from app.stage_resources import StageResourceError, inference_resources
 
@@ -46,7 +46,7 @@ class LLMClientConfig:
 
     def __post_init__(self) -> None:
         self.model = self.model.strip()
-        self.base_url = self.base_url.strip().rstrip("/")
+        self.base_url = local_ollama_url(self.base_url)
         if not self.model or not self.base_url:
             raise ValueError("Ollama model and base URL must not be empty.")
         if min(self.max_tokens, self.num_ctx, self.num_thread) < 1:
