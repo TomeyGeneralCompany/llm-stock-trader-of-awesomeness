@@ -27,15 +27,21 @@ class IntelligenceController:
         except Timeout:
             pass
 
-    def observe(self, bars, now):
-        """Paper observations are archived, never turned into orders by research."""
+    def observe(self, bars, now, *, review=True):
+        """Archive a poll in one transaction and register each symbol only once."""
         from app.paper_market import regular
-        for bar in bars:
-            if bar.end <= now:
-                body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
-                self.store.observe(bar.symbol, "5m", bar.end, body, now, "regular" if regular(bar) else "extended")
-                self.store.security(bar.symbol, {}, now)
-        self.evaluate(now)
+        with self.store.connect() as db:
+            symbols = set()
+            for bar in bars:
+                if bar.end <= now:
+                    body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
+                    self.store.observe(bar.symbol, "5m", bar.end, body, now,
+                                       "regular" if regular(bar) else "extended", connection=db)
+                    symbols.add(bar.symbol)
+            for symbol in symbols:
+                self.store.security(symbol, {}, now, connection=db)
+        if review:
+            self.evaluate(now)
 
     def cycle(self, now=None, *, priority=(), acquire=True, research=True):
         time_source = (lambda: datetime.now(UTC)) if now is None else None

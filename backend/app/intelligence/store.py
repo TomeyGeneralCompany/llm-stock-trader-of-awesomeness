@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -117,14 +117,17 @@ class IntelligenceStore:
         with self.connect() as db:
             db.execute("INSERT INTO intelligence_events(stamp,stage,body) VALUES(?,?,?)", (stamp(now), stage, dump(body)))
 
-    def security(self, symbol, metadata, now):
-        with self.connect() as db:
-            row = db.execute("SELECT body FROM securities WHERE symbol=?", (symbol,)).fetchone()
-            current = db.execute("SELECT updated FROM securities WHERE symbol=?", (symbol,)).fetchone()
-            body = json.loads(row[0]) if row and current["updated"]<=stamp(now) else {}
+    def security(self, symbol, metadata, now, *, connection=None):
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
+            row = db.execute("SELECT body,updated FROM securities WHERE symbol=?", (symbol,)).fetchone()
+            available = stamp(now)
+            present = row is not None and row["updated"]<=available
+            body = json.loads(row["body"]) if present else {}
             body.update({key: value for key, value in metadata.items() if value is not None and value != [] or key not in body})
             body["symbol"] = symbol
             encoded = dump(body)
+            if present and encoded == row["body"]:
+                return
             db.execute("INSERT OR IGNORE INTO security_versions VALUES(?,?,?,?)", (symbol, stamp(now), encoded, sha(encoded)))
             db.execute("INSERT INTO securities VALUES(?,?,?) ON CONFLICT(symbol) DO UPDATE SET body=excluded.body,updated=excluded.updated WHERE excluded.updated>=securities.updated", (symbol, encoded, stamp(now)))
             ident = sha("company:" + symbol)
@@ -138,7 +141,7 @@ class IntelligenceStore:
                 FROM security_versions WHERE available<=?) WHERE rank=1""", (stamp(now),)).fetchall()
         return {row["symbol"]: json.loads(row["body"]) for row in rows}
 
-    def observe(self, symbol, interval, end, body, acquired, session="regular"):
+    def observe(self, symbol, interval, end, body, acquired, session="regular", *, connection=None):
         end, acquired = stamp(end), stamp(acquired)
         if end > acquired:
             raise ValueError("Cannot archive an unfinished market observation.")
@@ -148,7 +151,7 @@ class IntelligenceStore:
             if not math.isfinite(value) or value < 0 or (key != "volume" and value == 0):
                 raise ValueError("Invalid market observation.")
         encoded = dump(body)
-        with self.connect() as db:
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
             db.execute("INSERT OR IGNORE INTO market_observations VALUES(?,?,?,?,?,?,?)",
                        (symbol, interval, end, acquired, session, encoded, sha(encoded)))
             db.execute("""INSERT INTO coverage VALUES(?,?,?,?,?,?,?)

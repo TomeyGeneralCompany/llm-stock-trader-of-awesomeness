@@ -442,3 +442,22 @@ def test_economic_vintages_keep_values_raw_payload_and_acquisition_time(tmp_path
         assert "private-key" not in db.execute("SELECT url FROM documents").fetchone()[0]
     assert not intel.store.retrieve("DFF",WHEN-timedelta(seconds=1))
     assert intel.store.retrieve("DFF",WHEN)
+
+
+
+def test_rank_breakdown_uses_known_reaction_liquidity_and_session_time(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    bars=day_bars(n=35,growth=.01)
+    now=bars[-1].end
+    intel.observe(bars,now)
+    intel.research.step(now)
+    with intel.store.connect() as db:
+        db.execute("UPDATE market_forecasts SET body=json_set(body,'$.historical_reaction',json(?))",
+                   (json.dumps({"sample_size":4,"mean":.04}),))
+    total,ctx=intel.rank("AAA",.1,now,bars=bars,closing=now+timedelta(minutes=2))
+    ranking=ctx["ranking"]
+    assert ranking["historical_samples"]==4 and ranking["median_dollar_volume"]>0
+    assert ranking["minutes_remaining"]==2
+    assert ranking["components"]["historical"]>0 and ranking["components"]["liquidity"]>0
+    assert total==pytest.approx(sum(ranking["components"].values()))

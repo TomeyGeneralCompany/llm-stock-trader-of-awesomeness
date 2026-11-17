@@ -496,7 +496,7 @@ class PaperTrader:
                 self.save(db, state)
 
         if self.intelligence is not None:
-            self.intelligence.observe(bars, now)
+            self.intelligence.observe(bars, now, review=analyze)
         if analyze:
             self.analyze(now, time_source=time_source)
         with self.connect() as db:
@@ -565,7 +565,9 @@ class PaperTrader:
                           "required_position": p["required_position"], "timeframe": p["timeframe"][:80]} for p in plans]
                 exposure = [{"symbol": sym, "value": round(pos["shares"] * state["marks"][sym]["price"], 6)}
                             for sym, pos in sorted(state["holdings"].items(), key=lambda item: -item[1]["basis"])[:4]]
-                context = {**candidate, "triggered_watches": candidate["triggered_watches"][:2],
+                receipt = db.execute("SELECT received FROM bar_receipts WHERE symbol=? AND end=?",
+                                     (symbol,candidate["asof"])).fetchone()
+                context = {**candidate, "market_received_at": receipt[0] if receipt else None, "triggered_watches": candidate["triggered_watches"][:2],
                            "observation_timeframe": "5-minute completed bars through "+candidate["asof"],
                            "shares": state["holdings"].get(symbol, {}).get("shares", 0.),
                            "portfolio": {"available_cash": available, "unsettled": state["unsettled"],
@@ -603,6 +605,9 @@ class PaperTrader:
                 self.event(db, {"day": day}, submitted, "analysis_completed",
                            {"symbol": symbol, "decision_id": ident, "bar": candidate["asof"],
                             "started": started.isoformat(), "finished": submitted.isoformat(),
+                            "market_received_at": context["market_received_at"],
+                            "feed_lag_seconds": (utc(context["market_received_at"])-utc(candidate["asof"])).total_seconds()
+                                if context["market_received_at"] else None,
                             "queue_seconds": inference_started-timer,
                             "inference_seconds": time.monotonic()-inference_started})
                 action = execution_action(decision)
