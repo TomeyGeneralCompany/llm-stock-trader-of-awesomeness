@@ -80,10 +80,21 @@ def evaluation(manifest, report):
             continue
         realized=row["cash"]+row["unsettled"]
         identity_matches=row.get("runtime")==manifest["runtime"] and not row.get("runtime_changed")
-        passed=(identity_matches and row["start"]==manifest["start"] and row["complete"] and row["achieved"]
-                and not row["holdings"] and realized>=manifest["target"])
-        results.append({"day":day,"result":"pass" if passed else "configuration_changed" if not identity_matches else "miss" if row["complete"] else "incomplete",
-                        "realized":realized,"goal_reached_at":row["goal_reached_at"]})
+        coverage = row.get("coverage")
+        verified = bool(coverage and coverage.get("mode") == "forward" and coverage.get("verified") is True)
+        if not identity_matches:
+            result = "configuration_changed"
+        elif not coverage:
+            result = "coverage_unverified"
+        elif not verified or not row["complete"]:
+            result = "incomplete"
+        elif (row["start"] == manifest["start"] and row["achieved"]
+              and not row["holdings"] and realized >= manifest["target"]):
+            result = "pass"
+        else:
+            result = "miss"
+        results.append({"day": day, "result": result, "realized": realized,
+                        "goal_reached_at": row["goal_reached_at"], "coverage": coverage})
     return {"passed": len(results)==5 and all(row["result"]=="pass" for row in results),"sessions":results,
             "frozen":manifest["runtime"]}
 

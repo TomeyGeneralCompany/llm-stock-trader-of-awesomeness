@@ -16,6 +16,7 @@ import pandas as pd
 from app.llm.client import get_llm_client
 from app.llm.decisions import EXPLANATION_INSTRUCTIONS, DecisionError, execution_action, validate_decision
 from app.llm.memory import prompt_budget
+from app.paper_coverage import ACTIONABLE_AGE, session_coverage
 from app.paper_market import Bar, Quote, EASTERN, UTC, BAR_MINUTES, listed_symbols, market_close, read_replay, regular, utc, yahoo_bars
 from app.stage_resources import stage_resources
 
@@ -185,12 +186,15 @@ class PaperTrader:
                 CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS bars (symbol TEXT, end TEXT, body TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS service_heartbeat (id INTEGER PRIMARY KEY, stamp TEXT);
+                CREATE TABLE IF NOT EXISTS session_heartbeats (stamp TEXT PRIMARY KEY);
+                CREATE INDEX IF NOT EXISTS bars_end ON bars(end);
                 CREATE TABLE IF NOT EXISTS ranked_snapshot (id INTEGER PRIMARY KEY, stamp TEXT, body TEXT);
                 CREATE TABLE IF NOT EXISTS bar_receipts (symbol TEXT, end TEXT, received TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS decisions (id INTEGER PRIMARY KEY, day TEXT, symbol TEXT, bar TEXT,
                     submitted TEXT, body TEXT, context TEXT, UNIQUE(day,symbol,bar));
                 CREATE TABLE IF NOT EXISTS outcomes (decision_id INTEGER PRIMARY KEY, observed TEXT, body TEXT);
                 CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, day TEXT, stamp TEXT, kind TEXT, body TEXT);
+                CREATE INDEX IF NOT EXISTS event_kind_day ON events(kind,day);
                 CREATE TABLE IF NOT EXISTS sessions (day TEXT PRIMARY KEY, body TEXT);
             """)
             existing = db.execute("SELECT body FROM config WHERE id=1").fetchone()
@@ -244,7 +248,11 @@ class PaperTrader:
         state["pending"] = {}
         self.event(db, state, stamp, "objective_achieved", {"realized_balance": state["cash"] + state["unsettled"]})
 
-    def end_session(self, db, state, stamp):
+    def coverage(self, db, day):
+        opened = datetime.fromisoformat(day).replace(hour=9, minute=30, tzinfo=EASTERN).astimezone(UTC)
+        return session_coverage(db, opened, self.closing(day), self.mode)
+
+    def end_session(self, db, state, stamp, coverage=None):
         if state["day"] is None or state["closed"]:
             return
         for symbol, order in list(state["pending"].items()):
@@ -253,13 +261,14 @@ class PaperTrader:
         # Value remaining inventory at observed close less estimated exit costs.
         # This is not a fabricated closing fill and may be incomplete with stale marks.
         expected = self.closing(state["day"])
-        complete = all(utc(state["marks"][sym]["end"]) >= expected for sym in state["holdings"])
-        seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (expected.isoformat(),)).fetchone()
-        complete = complete and bool(seen)
+        coverage = coverage if coverage is not None else self.coverage(db, state["day"])
+        unmarked = sorted(sym for sym in state["holdings"] if utc(state["marks"][sym]["end"]) < expected)
+        coverage["holdings_without_close"] = unmarked
+        complete = coverage["verified"] and not unmarked
         equity = self.equity(state)
         summary = dict(day=state["day"], runtime=state.get("runtime"), runtime_changed=state.get("runtime_changed",False), start=self.initial if self.challenge else state.get("opening_equity", self.initial),
                        equity=equity, cash=state["cash"], unsettled=state["unsettled"], holdings=state["holdings"],
-                       goal=OBJECTIVE if self.challenge else None, complete=complete,
+                       goal=OBJECTIVE if self.challenge else None, complete=complete, coverage=coverage,
                        achieved=bool(state["goal_reached_at"]) if self.challenge else None,
                        goal_reached_at=state["goal_reached_at"], marked_goal=(complete and equity >= OBJECTIVE) if self.challenge else None,
                        valuation="net marked equity; goal requires realized flat balance; no invented closing fills")
@@ -403,7 +412,7 @@ class PaperTrader:
 
     def latest_candidates(self, db, state, now):
         results = []
-        recent = now - timedelta(minutes=15)
+        recent = now - ACTIONABLE_AGE
         rows = db.execute("SELECT symbol,MAX(end) FROM bars WHERE end<=? AND end>=? GROUP BY symbol",
                           (now.isoformat(), recent.isoformat())).fetchall()
         for symbol, end in rows:
@@ -433,6 +442,11 @@ class PaperTrader:
                     raise ValueError("Paper clock cannot move backwards")
                 self.ingest(db, bars, now)
                 db.execute("INSERT OR REPLACE INTO service_heartbeat VALUES (1,?)", (now.isoformat(),))
+                if self.mode == "forward":
+                    local = now.astimezone(EASTERN)
+                    close_time = market_close(day, self.close)
+                    if close_time and (9, 30) <= (local.hour, local.minute) <= close_time:
+                        db.execute("INSERT OR IGNORE INTO session_heartbeats VALUES (?)", (now.isoformat(),))
                 actual = [b for b in bars if b.end <= now and b.day == day and regular(b, *(self.close or (None, None)))]
                 if cursor is not None:
                     state["cursor"] = cursor
@@ -487,12 +501,13 @@ class PaperTrader:
                             self.fill(db,state,previous[-1],now,quote=quote)
                 state["last_poll"] = now.isoformat()
                 closing = self.closing(day)
-                closing_seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (closing.isoformat(),)).fetchone()
                 # Allow delayed providers to deliver the final completed bar.
                 required = set(state["holdings"]) | set(state["pending"])
                 final_marks = all(utc(state["marks"].get(sym, {"end": "1970-01-01T00:00:00+00:00"})["end"]) >= closing for sym in required)
-                if finish or (now >= closing and ((closing_seen and final_marks) or now >= closing + timedelta(minutes=30))):
-                    self.end_session(db, state, now)
+                if finish or (now >= closing and not state["closed"]):
+                    coverage = self.coverage(db, day)
+                    if finish or (coverage["verified"] and final_marks) or now >= closing + timedelta(minutes=30):
+                        self.end_session(db, state, now, coverage)
                 self.save(db, state)
 
         if self.intelligence is not None:
@@ -584,16 +599,31 @@ class PaperTrader:
                     self.event(db, state, now, "watch_triggered", {"symbol": symbol, "conditions": candidate["triggered_watches"]})
             started = utc(time_source()) if time_source else now
             timer = time.monotonic()
+            timing = {
+                "symbol": symbol,
+                "bar": candidate["asof"],
+                "started": started.isoformat(),
+                "market_received_at": context["market_received_at"],
+                "feed_lag_seconds": (utc(context["market_received_at"]) - utc(candidate["asof"])).total_seconds()
+                    if context["market_received_at"] else None,
+            }
+            inference_started = None
             try:
                 with stage_resources("ANALYZE"):
                     inference_started = time.monotonic()
+                    timing["inference_started_at"] = (utc(time_source()) if time_source else now).isoformat()
+                    timing["queue_seconds"] = inference_started - timer
                     decision = check_decision(self.decide(context, lessons), context)
             except Exception as exc:
+                failed = utc(time_source()) if time_source else now
+                if inference_started is not None:
+                    timing["inference_seconds"] = time.monotonic() - inference_started
                 with self.lock, self.connect() as db:
-                    self.event(db, self.state(db), utc(time_source()) if time_source else now,
-                               "analysis_error", {"symbol": symbol, "error": str(exc)[:500]})
+                    self.event(db, {"day": day}, failed, "analysis_error",
+                               {**timing, "finished": failed.isoformat(), "error": str(exc)[:500]})
                 continue
             submitted = utc(time_source()) if time_source else now
+            timing.update(finished=submitted.isoformat(), inference_seconds=time.monotonic() - inference_started)
             with self.lock, self.connect() as db:
                 state = self.state(db)
                 row = db.execute("INSERT OR IGNORE INTO decisions(day,symbol,bar,submitted,body,context) VALUES(?,?,?,?,?,?)",
@@ -602,23 +632,23 @@ class PaperTrader:
                     continue
                 completed += 1
                 ident = row.lastrowid
-                self.event(db, {"day": day}, submitted, "analysis_completed",
-                           {"symbol": symbol, "decision_id": ident, "bar": candidate["asof"],
-                            "started": started.isoformat(), "finished": submitted.isoformat(),
-                            "market_received_at": context["market_received_at"],
-                            "feed_lag_seconds": (utc(context["market_received_at"])-utc(candidate["asof"])).total_seconds()
-                                if context["market_received_at"] else None,
-                            "queue_seconds": inference_started-timer,
-                            "inference_seconds": time.monotonic()-inference_started})
                 action = execution_action(decision)
+                snapshot_current = (
+                    state["day"] == day and not state["closed"] and submitted < closing
+                    and submitted - utc(candidate["asof"]) <= ACTIONABLE_AGE
+                    and state["marks"].get(symbol, {}).get("end", "") <= candidate["asof"]
+                )
+                timing.update(decision_id=ident, action=action, snapshot_current=snapshot_current)
                 if action == "HOLD":
+                    self.event(db, {"day": day}, submitted, "analysis_completed",
+                               {**timing, "disposition": "hold"})
                     continue
                 current_shares = state["holdings"].get(symbol, {}).get("shares", 0.)
                 available_now = max(0., state["cash"]-sum(x.get("reserved", 0.) for x in state["pending"].values()))
                 reason = None
                 if state["day"] != day or state["closed"] or state["goal_reached_at"] or submitted >= closing:
                     reason = "session or objective closed"
-                elif submitted-utc(candidate["asof"]) > timedelta(minutes=15):
+                elif submitted-utc(candidate["asof"]) > ACTIONABLE_AGE:
                     reason = "stale market snapshot"
                 elif symbol in state["pending"] or current_shares != context["shares"]:
                     reason = "position or order changed during inference"
@@ -634,6 +664,8 @@ class PaperTrader:
                     order["quantity"] = current_shares*fraction
                     if order["quantity"] <= 0:
                         reason = "no eligible holdings"
+                self.event(db, {"day": day}, submitted, "analysis_completed",
+                           {**timing, "disposition": "rejected" if reason else "queued", "reason": reason})
                 if reason:
                     self.event(db, {"day": day}, submitted, "order_not_queued",
                                {"symbol": symbol, "decision_id": ident, "reason": reason})
@@ -675,6 +707,18 @@ def read_report(path):
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         heartbeat = db.execute("SELECT stamp FROM service_heartbeat WHERE id=1").fetchone() if "service_heartbeat" in tables else None
         ranking = db.execute("SELECT stamp,body FROM ranked_snapshot WHERE id=1").fetchone() if "ranked_snapshot" in tables else None
+        timing_rows = db.execute("""SELECT body FROM events
+            WHERE day=? AND kind IN ('analysis_completed','analysis_error') ORDER BY id DESC""",
+            (state["day"],)).fetchall()
+        timing = [json.loads(row[0]) for row in timing_rows]
+        measured = [row for row in timing if "disposition" in row]
+        analysis_timing = {
+            "completed": len(measured),
+            "current_when_finished": sum(row["snapshot_current"] for row in measured),
+            "queued": sum(row["disposition"] == "queued" for row in measured),
+            "rejected": sum(row["disposition"] == "rejected" for row in measured),
+            "recent": [row for row in timing if "bar" in row][:8],
+        }
         return {"mode": config["mode"], "challenge": config["challenge"], "profile": config, "state": state,
                 "equity": equity, "buying_power_model": "immediate paper reuse" if config["reuse_proceeds"] else "next-session settlement",
                 "sessions": [json.loads(r[0]) for r in db.execute("SELECT body FROM sessions ORDER BY day")],
@@ -683,6 +727,7 @@ def read_report(path):
                 "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0],
                 "latest_decisions": [{"symbol": sym, "bar": bar, "decision": json.loads(body)}
                     for sym,bar,body in db.execute("SELECT symbol,bar,body FROM decisions ORDER BY id DESC LIMIT 8")],
+                "analysis_timing": analysis_timing,
                 "service_checked_at": heartbeat[0] if heartbeat else None,
                 "last_quote_received": db.execute("SELECT MAX(received) FROM bar_receipts").fetchone()[0]
                     if "bar_receipts" in tables else None,
