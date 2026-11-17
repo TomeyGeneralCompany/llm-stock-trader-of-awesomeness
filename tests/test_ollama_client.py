@@ -41,14 +41,11 @@ def test_defaults_use_qwen_without_cloud_credentials(monkeypatch):
     for key in ("AZURE_OPENAI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.setenv(key, "old-unused-key")
     config = local_ai.LLMClientConfig()
-    assert config.provider == "ollama"
     assert config.model == "qwen3:4b"
     assert config.num_thread == 4
     assert config.num_ctx == 8192
     assert config.timeout_seconds == 0
     assert not config.think
-    with pytest.raises(ValueError, match="Only the local Ollama"):
-        local_ai.get_llm_client(provider="azure")
 
 
 def test_env_settings_and_old_env_file_are_compatible(tmp_path):
@@ -64,6 +61,14 @@ def test_env_settings_and_old_env_file_are_compatible(tmp_path):
     assert config.OLLAMA_NUM_CTX == 4096
     assert config.OLLAMA_THINK
     assert config.OLLAMA_TIMEOUT_SECONDS == 900
+
+
+@pytest.mark.parametrize("remote", ["https://example.org", "http://192.168.1.4:11434", "http://0.0.0.0:11434"])
+def test_inference_cannot_target_a_nonlocal_host(remote):
+    with pytest.raises(ValueError, match="local loopback origin"):
+        Settings(_env_file=None, OLLAMA_BASE_URL=remote)
+    with pytest.raises(ValueError, match="local loopback origin"):
+        local_ai.get_llm_client(base_url=remote)
 
 
 def test_native_json_request_and_final_answer(mock_ollama):
@@ -123,7 +128,7 @@ def test_configured_client_prose_and_runtime_overrides(mock_ollama):
         timeout_seconds=900,
     )
     assert (
-        local_ai.get_configured_client(config).invoke("Review this decision").content
+        config.create_client().invoke("Review this decision").content
         == "English strategy review."
     )
 

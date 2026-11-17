@@ -215,7 +215,7 @@ flowchart TD
 - **API Version control**: Supports multiple versions of API side by side
 - **Pluggable strategies**: Supports multiple trading strategies in parallel
 - **Multiple data sources**: Can be extended to support additional financial data providers
-- **Flexible deployment**: Supports local development and cloud deployment
+- **Local deployment**: The dashboard, backend, controller and Ollama run on the same computer
 
 ## Local Model Integration
 

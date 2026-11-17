@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 import httpx
 
-from app.config import settings
+from app.config import local_ollama_url, settings
 from app.llm.memory import prompt_budget
 from app.stage_resources import StageResourceError, inference_resources
 
@@ -30,7 +30,6 @@ class LLMResponse:
 class LLMClientConfig:
     """Local model configuration, with environment-backed defaults."""
 
-    provider: Literal["ollama"] = "ollama"
     model: str = field(default_factory=lambda: settings.OLLAMA_MODEL)
     base_url: str = field(default_factory=lambda: settings.OLLAMA_BASE_URL)
     temperature: float = 0.1
@@ -46,10 +45,8 @@ class LLMClientConfig:
     response_schema: Optional[dict] = None
 
     def __post_init__(self) -> None:
-        if self.provider != "ollama":
-            raise ValueError("Only the local Ollama provider is supported.")
         self.model = self.model.strip()
-        self.base_url = self.base_url.strip().rstrip("/")
+        self.base_url = local_ollama_url(self.base_url)
         if not self.model or not self.base_url:
             raise ValueError("Ollama model and base URL must not be empty.")
         if min(self.max_tokens, self.num_ctx, self.num_thread) < 1:
@@ -165,20 +162,13 @@ class OllamaClient:
 
 
 def get_llm_client(
-    provider: Optional[Literal["ollama"]] = None,
     temperature: float = 0.1,
     max_tokens: int = 4000,
     **kwargs,
 ) -> OllamaClient:
     """Create the local Qwen client used by all application AI features."""
     return LLMClientConfig(
-        provider=provider or "ollama",
         temperature=temperature,
         max_tokens=max_tokens,
         **kwargs,
     ).create_client()
-
-
-def get_configured_client(config: Optional[LLMClientConfig] = None) -> OllamaClient:
-    """Create a client using explicit configuration or current local defaults."""
-    return (config or LLMClientConfig()).create_client()

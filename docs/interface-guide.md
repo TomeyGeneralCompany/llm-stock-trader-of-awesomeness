@@ -6,7 +6,7 @@ All AI features use the local Ollama model configured in `.env`, defaulting to `
 
 ## Backtest Setup
 
-Open `http://localhost:3000` after starting the application.
+Open `http://127.0.0.1:3000` after starting the application.
 
 | Control | Meaning |
 | --- | --- |
