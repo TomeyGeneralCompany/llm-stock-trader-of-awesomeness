@@ -45,3 +45,8 @@ The suite includes acquisition parsing, original/version/chunk preservation, sou
 Research generation sends its typed JSON schema through Ollama's native format field. The controller still validates exact source quotations, available times, registered securities and semantic consistency; a structurally valid answer can still be rejected. Existing callers retain their original JSON/prose defaults and inference controls.
 
 Treasury acquisition reads the department's official press-release index and queues its article links; it does not assume an RSS endpoint. HTTP content negotiation accepts standard XML media types. Updating a configured source replaces its adapter definition and marks obsolete pending poll jobs superseded while retaining their history.
+
+
+The FRED adapter archives recent numeric observations. ALFRED queries observation values with their vintage intervals, queues further pages, and retains the raw provider payload and the acquisition timestamp. The observation date and vintage dates describe the economic record; the archive's availability timestamp controls point-in-time retrieval. Unconfigured optional sources leave other acquisition running.
+
+Ranked opportunities record their technical, catalyst, historical-response, and liquidity contributions. Historical scores use bounded event-study samples and shrink small samples toward zero. The dashboard reports counts and recent coverage by symbol, interval, and session, plus daily accuracy, ranked evidence links and paper activity.
