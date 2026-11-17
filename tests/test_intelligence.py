@@ -422,3 +422,42 @@ def test_reviewed_cause_reaches_future_context_and_industry_groups_stay_contempo
     assert any(lesson.get("causal_review")=="AAA has a direct input relationship with BBB." for lesson in context["lessons"])
     groups=[group for group in intel.overview(later)["accuracy"] if group["group"]=="industry"]
     assert groups[0]["label"]=="Manufacturing"
+
+
+
+def test_economic_vintages_keep_values_raw_payload_and_acquisition_time(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    url="https://api.stlouisfed.org/fred/series/observations"
+    raw=json.dumps({"count":2,"observations":[
+        {"date":"2025-01-01","realtime_start":"2025-02-01","realtime_end":"2025-02-20","value":"1.25"},
+        {"date":"2025-01-01","realtime_start":"2025-02-21","realtime_end":"2025-03-03","value":"1.50"},
+    ]}).encode()
+    intel.acquisition.archive_economic({"source":"alfred","kind":"alfred"},{"url":url},
+        {"api_key":"private-key","series_id":"DFF","offset":0,"realtime_end":"2025-03-03"},raw,stamp(WHEN))
+    with intel.store.connect() as db:
+        rows=db.execute("SELECT * FROM economic_observations ORDER BY vintage_start").fetchall()
+        assert [row["value"] for row in rows]==[1.25,1.5]
+        assert all(row["acquired"]==stamp(WHEN) for row in rows)
+        assert db.execute("SELECT body FROM source_payloads").fetchone()[0]==raw
+        assert "private-key" not in db.execute("SELECT url FROM documents").fetchone()[0]
+    assert not intel.store.retrieve("DFF",WHEN-timedelta(seconds=1))
+    assert intel.store.retrieve("DFF",WHEN)
+
+
+
+def test_rank_breakdown_uses_known_reaction_liquidity_and_session_time(tmp_path):
+    intel=IntelligenceController(tmp_path/"archive.db",config(),client=ResearchModel())
+    fixture(intel)
+    bars=day_bars(n=35,growth=.01)
+    now=bars[-1].end
+    intel.observe(bars,now)
+    intel.research.step(now)
+    with intel.store.connect() as db:
+        db.execute("UPDATE market_forecasts SET body=json_set(body,'$.historical_reaction',json(?))",
+                   (json.dumps({"sample_size":4,"mean":.04}),))
+    total,ctx=intel.rank("AAA",.1,now,bars=bars,closing=now+timedelta(minutes=2))
+    ranking=ctx["ranking"]
+    assert ranking["historical_samples"]==4 and ranking["median_dollar_volume"]>0
+    assert ranking["minutes_remaining"]==2
+    assert ranking["components"]["historical"]>0 and ranking["components"]["liquidity"]>0
+    assert total==pytest.approx(sum(ranking["components"].values()))

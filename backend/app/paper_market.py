@@ -149,14 +149,15 @@ def normalize_history(frame, symbol, now):
     return bars
 
 
-def yahoo_bars(symbols, now):
+def yahoo_bars(symbols, now, *, period="5d", start=None):
     """Bounded batches; missing symbols remain missing, never synthesized."""
     result = []
     for offset in range(0, len(symbols), 32):
         batch = symbols[offset:offset + 32]
         if not batch:
             continue
-        frame = yf.download(batch, period="5d", interval="5m", group_by="ticker",
+        history = {"start": start} if start is not None else {"period": period}
+        frame = yf.download(batch, **history, interval="5m", group_by="ticker",
                             auto_adjust=False, prepost=False, progress=False,
                             threads=False, timeout=20)
         for symbol in batch:
@@ -176,3 +177,26 @@ def read_replay(path):
     with open(path, newline="", encoding="utf-8") as handle:
         return sorted((Bar.from_record(row) for row in csv.DictReader(handle)),
                       key=lambda bar: (bar.end, bar.symbol))
+
+
+
+@dataclass(frozen=True)
+class Quote:
+    symbol: str
+    time: datetime
+    received: datetime
+    bid: float
+    ask: float
+    bid_size: float
+    ask_size: float
+    fractional_eligible: bool | None = None
+
+    def __post_init__(self):
+        if not self.symbol or self.time.tzinfo is None or self.received.tzinfo is None or self.time > self.received:
+            raise ValueError("Quote requires a symbol and ordered, timezone-aware timestamps")
+        if not all(math.isfinite(x) for x in (self.bid,self.ask,self.bid_size,self.ask_size)):
+            raise ValueError("Quote must contain finite prices and sizes")
+        if not 0 < self.bid <= self.ask or min(self.bid_size,self.ask_size) < 0:
+            raise ValueError("Invalid bid, ask or displayed size")
+        if self.fractional_eligible is not None and type(self.fractional_eligible) is not bool:
+            raise ValueError("Fractional eligibility must be true, false or unknown")

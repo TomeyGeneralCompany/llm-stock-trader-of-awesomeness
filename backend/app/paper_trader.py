@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import sqlite3
 import time
+import threading
 
 from filelock import FileLock
 import pandas as pd
@@ -15,7 +16,7 @@ import pandas as pd
 from app.llm.client import get_llm_client
 from app.llm.decisions import EXPLANATION_INSTRUCTIONS, DecisionError, execution_action, validate_decision
 from app.llm.memory import prompt_budget
-from app.paper_market import Bar, EASTERN, UTC, BAR_MINUTES, listed_symbols, market_close, read_replay, regular, utc, yahoo_bars
+from app.paper_market import Bar, Quote, EASTERN, UTC, BAR_MINUTES, listed_symbols, market_close, read_replay, regular, utc, yahoo_bars
 from app.stage_resources import stage_resources
 
 OBJECTIVE = 100.0
@@ -157,15 +158,19 @@ class PaperTrader:
     """Single-writer SQLite event ledger; atomic fills, state, decisions and outcomes."""
     def __init__(self, path, decide=None, *, challenge=True, initial=10000.0,
                  spread_bps=10, slippage_bps=5, fee=0.0, min_notional=.01,
-                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward", intelligence=None):
+                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward", intelligence=None, use_memory=True, runtime=None):
         self.intelligence = intelligence
         self.path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.lock = FileLock(self.path + ".lock", timeout=0)
+        self.lock = FileLock(self.path + ".lock", timeout=10)
+        self.analysis_lock = threading.Lock()
+        self.use_memory = use_memory
+        self.runtime = runtime
         self.decide = decide or LocalDecision()
         self.challenge = challenge
         self.initial = START if challenge else number(initial, .01, 1e12, "capital")
-        self.cost = (number(spread_bps, 0, 1000, "spread") / 2 + number(slippage_bps, 0, 1000, "slippage")) / 10000
+        self.slippage = number(slippage_bps, 0, 1000, "slippage") / 10000
+        self.cost = number(spread_bps, 0, 1000, "spread") / 20000 + self.slippage
         self.fee = number(fee, 0, 1000, "fee")
         self.minimum = number(min_notional, .000001, 1e6, "minimum notional")
         self.reuse = challenge if reuse_proceeds is None else bool(reuse_proceeds)
@@ -179,6 +184,9 @@ class PaperTrader:
                 CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS bars (symbol TEXT, end TEXT, body TEXT, PRIMARY KEY(symbol,end));
+                CREATE TABLE IF NOT EXISTS service_heartbeat (id INTEGER PRIMARY KEY, stamp TEXT);
+                CREATE TABLE IF NOT EXISTS ranked_snapshot (id INTEGER PRIMARY KEY, stamp TEXT, body TEXT);
+                CREATE TABLE IF NOT EXISTS bar_receipts (symbol TEXT, end TEXT, received TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS decisions (id INTEGER PRIMARY KEY, day TEXT, symbol TEXT, bar TEXT,
                     submitted TEXT, body TEXT, context TEXT, UNIQUE(day,symbol,bar));
                 CREATE TABLE IF NOT EXISTS outcomes (decision_id INTEGER PRIMARY KEY, observed TEXT, body TEXT);
@@ -249,7 +257,7 @@ class PaperTrader:
         seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (expected.isoformat(),)).fetchone()
         complete = complete and bool(seen)
         equity = self.equity(state)
-        summary = dict(day=state["day"], start=self.initial if self.challenge else state.get("opening_equity", self.initial),
+        summary = dict(day=state["day"], runtime=state.get("runtime"), runtime_changed=state.get("runtime_changed",False), start=self.initial if self.challenge else state.get("opening_equity", self.initial),
                        equity=equity, cash=state["cash"], unsettled=state["unsettled"], holdings=state["holdings"],
                        goal=OBJECTIVE if self.challenge else None, complete=complete,
                        achieved=bool(state["goal_reached_at"]) if self.challenge else None,
@@ -267,6 +275,7 @@ class PaperTrader:
         self.end_session(db, state, stamp)
         if self.challenge:
             cursor = state["cursor"]
+            state.clear()
             state.update(self.new_state())
             state["cursor"] = cursor
         else:
@@ -279,30 +288,40 @@ class PaperTrader:
         for bar in bars:
             if bar.end > now or not regular(bar, *(self.close or (None, None))):
                 continue
-            db.execute("INSERT OR IGNORE INTO bars VALUES(?,?,?)", (bar.symbol, bar.end.isoformat(), dump(bar.record())))
+            inserted = db.execute("INSERT OR IGNORE INTO bars VALUES(?,?,?)", (bar.symbol, bar.end.isoformat(), dump(bar.record())))
+            if inserted.rowcount:
+                db.execute("INSERT INTO bar_receipts VALUES(?,?,?)", (bar.symbol,bar.end.isoformat(),now.isoformat()))
 
     def history(self, db, symbol, now, limit=100):
         rows = db.execute("SELECT body FROM bars WHERE symbol=? AND end<=? ORDER BY end DESC LIMIT ?",
                           (symbol, now.isoformat(), limit)).fetchall()
         return [Bar.from_record(json.loads(row[0])) for row in reversed(rows)]
 
-    def fill(self, db, state, bar, stamp):
+    def fill(self, db, state, bar, stamp, *, quote=None):
         order = state["pending"].get(bar.symbol)
-        if not order or bar.start < utc(order["submitted"]) or bar.day != state["day"]:
+        market_time = quote.time if quote else bar.start
+        if not order or market_time < utc(order["submitted"]) or bar.day != state["day"]:
+            return
+        if quote and (quote.time <= utc(order["submitted"]) or quote.time >= self.closing(bar.day)):
+
             return
         # First eligible next-bar opening, not the decision bar. Volume is an
         # observed liquidity cap; no fill on zero volume. Orders are IOC at that bar.
         del state["pending"][bar.symbol]
         position = state["holdings"].get(bar.symbol)
         buying = order["action"] == "BUY"
-        price = bar.open * (1+self.cost if buying else 1-self.cost)
+        reference = (quote.ask if buying else quote.bid) if quote else bar.open
+        cost = self.slippage if quote else self.cost
+        price = reference * (1+cost if buying else 1-cost)
         reserved_other = sum(o.get("reserved", 0.) for o in state["pending"].values())
         if buying:
             spend = min(order["reserved"], max(0., state["cash"] - reserved_other))
             desired = max(0., spend-self.fee) / price
         else:
             desired = min(order["quantity"], position["shares"] if position else 0.)
-        quantity = float(Decimal(str(min(desired, bar.volume * .01))).quantize(SHARE_STEP, rounding=ROUND_DOWN))
+        capacity = (quote.ask_size if buying else quote.bid_size) if quote else bar.volume*.01
+        step = Decimal("1") if quote and quote.fractional_eligible is not True else SHARE_STEP
+        quantity = float(Decimal(str(min(desired, capacity))).quantize(step, rounding=ROUND_DOWN))
         notional = quantity * price
         if quantity <= 0 or notional < self.minimum or (not buying and notional < self.fee):
             self.event(db, state, stamp, "unfilled", {"symbol": bar.symbol, "order": order, "reason": "liquidity/minimum/cash"})
@@ -327,28 +346,38 @@ class PaperTrader:
             state["cash" if self.reuse else "unsettled"] += proceeds
         self.event(db, state, stamp, "fill", {"symbol": bar.symbol, "action": order["action"],
                    "quantity": quantity, "price": price, "fee": self.fee, "bar_start": bar.start.isoformat(),
-                   "bar_end": bar.end.isoformat(), "decision_id": order["decision_id"], "realized_pnl": realized})
-        self.check_goal(db, state, bar.end)
+                   "bar_end": bar.end.isoformat(), "decision_id": order["decision_id"], "realized_pnl": realized,
+                   "fill_method": "bid_ask" if quote else "completed_bar_open", "market_time": market_time.isoformat(),
+                   "received": quote.received.isoformat() if quote else stamp.isoformat(),
+                   "fractional_eligibility": quote.fractional_eligible if quote else "simulated"})
+        self.check_goal(db, state, quote.time if quote else bar.end)
 
     def score_outcomes(self, db, symbol, bar, stamp):
-        rows = db.execute("""SELECT d.id,d.body,d.bar,d.context FROM decisions d
+        rows = db.execute("""SELECT d.id,d.body,d.bar,d.context,d.submitted FROM decisions d
             LEFT JOIN outcomes o ON o.decision_id=d.id
             WHERE d.symbol=? AND d.bar<? AND o.decision_id IS NULL ORDER BY d.id""",
                           (symbol, bar.end.isoformat())).fetchall()
-        for ident, body, start, original in rows:
+        for ident, body, start, original, submitted in rows:
             decision, context = json.loads(body), json.loads(original)
+            base = db.execute("SELECT end,body FROM bars WHERE symbol=? AND end>=? AND end<=? ORDER BY end LIMIT 1",
+                              (symbol, max(start,submitted), bar.end.isoformat())).fetchone()
+            if base is None:
+                continue
+            origin, base_body = base
             after = db.execute("SELECT end,body FROM bars WHERE symbol=? AND end>? AND end<=? ORDER BY end LIMIT ?",
-                               (symbol, start, bar.end.isoformat(), decision["horizon_bars"])).fetchall()
+                               (symbol, origin, bar.end.isoformat(), decision["horizon_bars"])).fetchall()
             if len(after) < decision["horizon_bars"]:
                 continue
             observed, final = after[-1]
-            actual = json.loads(final)["close"] / context["current"]["close"] - 1
+            actual = json.loads(final)["close"] / json.loads(base_body)["close"] - 1
             expected = decision["expected_return"]
             outcome = dict(symbol=symbol, predicted_return=expected, actual_return=actual,
-                           error=expected-actual, direction_correct=(expected > 0) == (actual > 0),
+                           forecast_available=submitted, reference_bar=origin,
+                           error=expected-actual, direction_correct=((expected>0)-(expected<0)) == ((actual>0)-(actual<0)),
                            action=decision["action"], forecast=decision["explanation"]["forecast"]["scenario"][:180],
                            phase=context["trend"]["market_phase"])
-            db.execute("INSERT INTO outcomes VALUES(?,?,?)", (ident, observed, dump(outcome)))
+            outcome["observation_bar"] = observed
+            db.execute("INSERT INTO outcomes VALUES(?,?,?)", (ident, stamp.isoformat(), dump(outcome)))
             self.event(db, {"day": bar.day}, stamp, "forecast_scored", {"decision_id": ident, **outcome})
 
     def lessons(self, db, now, symbol):
@@ -387,14 +416,14 @@ class PaperTrader:
             info["symbol"] = symbol
             info["asof"] = end
             if self.intelligence is not None:
-                info["score"], info["intelligence"] = self.intelligence.rank(symbol, info["score"], now)
+                info["score"], info["intelligence"] = self.intelligence.rank(symbol, info["score"], now, bars=bars, closing=self.closing(state["day"]))
+                if not self.use_memory:
+                    info["intelligence"]["lessons"] = []
             results.append(info)
         return sorted(results, key=lambda x: (-x["score"], x["symbol"]))
 
-    def tick(self, bars, now, *, time_source=None, cursor=None, finish=False):
+    def tick(self, bars, now, *, time_source=None, cursor=None, finish=False, analyze=True, quotes=()):
         now = utc(now)
-        if self.intelligence is not None:
-            self.intelligence.observe(bars, now)
         day = now.astimezone(EASTERN).date().isoformat()
         # Serialize controller even across processes; writes are recoverable.
         with self.lock:
@@ -403,6 +432,7 @@ class PaperTrader:
                 if state["last_poll"] and now < utc(state["last_poll"]):
                     raise ValueError("Paper clock cannot move backwards")
                 self.ingest(db, bars, now)
+                db.execute("INSERT OR REPLACE INTO service_heartbeat VALUES (1,?)", (now.isoformat(),))
                 actual = [b for b in bars if b.end <= now and b.day == day and regular(b, *(self.close or (None, None)))]
                 if cursor is not None:
                     state["cursor"] = cursor
@@ -413,8 +443,16 @@ class PaperTrader:
                     return state
                 if state["day"] != day:
                     self.open_session(db, state, day, now)
-                if cursor is not None:
-                    state["cursor"] = cursor
+                eligible_quotes = {}
+                for quote in sorted(quotes, key=lambda item: (item.time, item.received)):
+                    order = state["pending"].get(quote.symbol)
+                    if (order and quote.time.astimezone(EASTERN).date().isoformat() == day
+                            and utc(order["submitted"]) < quote.time < self.closing(day) and quote.received <= now):
+                        eligible_quotes.setdefault(quote.symbol, quote)
+                if self.runtime is not None:
+                    if state.get("runtime") not in (None,self.runtime):
+                        state["runtime_changed"] = True
+                    state["runtime"] = self.runtime
                 latest = {}
                 for bar in actual:
                     if bar.symbol not in latest or bar.end > latest[bar.symbol].end:
@@ -429,7 +467,10 @@ class PaperTrader:
                         if order:
                             earliest = next((b for b in self.history(db, bar.symbol, now, 500)
                                              if b.day == day and b.start >= utc(order["submitted"])), None)
-                            if earliest:
+                            quote = eligible_quotes.get(bar.symbol)
+                            if quote and (earliest is None or quote.time <= earliest.start):
+                                self.fill(db,state,bar,now,quote=quote)
+                            elif earliest:
                                 self.fill(db, state, earliest, now)
                     saved_bar = db.execute("SELECT body FROM bars WHERE symbol=? AND end=?",
                                            (bar.symbol, bar.end.isoformat())).fetchone()
@@ -438,6 +479,12 @@ class PaperTrader:
                     if not previous or bar.end > utc(previous["end"]):
                         state["marks"][bar.symbol] = {"price": bar.close, "end": bar.end.isoformat()}
                     self.score_outcomes(db, bar.symbol, bar, now)
+                for symbol, quote in eligible_quotes.items():
+                    if symbol not in latest and not state["closed"] and symbol in state["marks"]:
+                        # An existing mark supplies the session; the bid/ask supplies the fill price.
+                        previous = self.history(db,symbol,now,1)
+                        if previous and previous[-1].day == day:
+                            self.fill(db,state,previous[-1],now,quote=quote)
                 state["last_poll"] = now.isoformat()
                 closing = self.closing(day)
                 closing_seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (closing.isoformat(),)).fetchone()
@@ -447,94 +494,154 @@ class PaperTrader:
                 if finish or (now >= closing and ((closing_seen and final_marks) or now >= closing + timedelta(minutes=30))):
                     self.end_session(db, state, now)
                 self.save(db, state)
-                if state["closed"] or now >= closing or state["goal_reached_at"]:
-                    return state
-                ranked = self.latest_candidates(db, state, now)
-                # Prioritize open positions and unresolved conditional plans; reserve
-                # capacity for discovery and order candidates by market score.
-                prior = {}
-                for x in ranked:
-                    previous = db.execute("SELECT body FROM decisions WHERE day=? AND symbol=? ORDER BY id DESC LIMIT 1",
-                                          (day, x["symbol"])).fetchone()
-                    if previous:
-                        prior[x["symbol"]] = json.loads(previous[0])
-                    x["triggered_watches"] = triggered_watches(prior.get(x["symbol"], {}), x, x["symbol"] in state["holdings"])
-                eligible = [x for x in ranked if x["symbol"] not in state["pending"] and not db.execute(
-                    "SELECT 1 FROM decisions WHERE day=? AND symbol=? AND bar=?",
-                    (day, x["symbol"], x["asof"])).fetchone()]
-                eligible.sort(key=lambda x: (x["symbol"] not in state["holdings"], not x["triggered_watches"], -x["score"]))
-                selected = eligible[:self.max_candidates]
-                discoveries = [x for x in eligible if x["symbol"] not in prior and x not in selected]
-                if discoveries and len(selected) > 1 and all(x["symbol"] in prior for x in selected):
-                    selected[-1] = discoveries[0]
-                alternatives = [{"symbol": x["symbol"], "score": round(x["score"], 6),
-                                 "return_6_bars": round(x["technical_facts"]["return_6_bars"], 5),
-                                 "prior_forecast": prior.get(x["symbol"], {}).get("expected_return")}
-                                for x in ranked[:5]]
-            for candidate in selected:
-                with self.connect() as db:
-                    state = self.state(db)
-                    symbol = candidate["symbol"]
-                    if state["goal_reached_at"]:
-                        break
-                    reserved = sum(x.get("reserved", 0.) for x in state["pending"].values())
-                    available = max(0., state["cash"]-reserved)
-                    previous = db.execute("SELECT body FROM decisions WHERE symbol=? ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
-                    plans = json.loads(previous[0])["explanation"]["conditional_actions"][:2] if previous else []
-                    # Bound retrieved plan text independently of model output size.
-                    plans = [{"action": p["action"], "trigger": p["trigger"][:140],
-                              "required_position": p["required_position"], "timeframe": p["timeframe"][:80]} for p in plans]
-                    exposure = [{"symbol": sym, "value": round(pos["shares"] * state["marks"][sym]["price"], 6)}
-                                for sym, pos in sorted(state["holdings"].items(), key=lambda item: -item[1]["basis"])[:4]]
-                    context = {**candidate, "triggered_watches": candidate["triggered_watches"][:2],
-                               "observation_timeframe": "5-minute completed bars through "+candidate["asof"],
-                               "shares": state["holdings"].get(symbol, {}).get("shares", 0.),
-                               "portfolio": {"available_cash": available, "unsettled": state["unsettled"],
-                                             "equity": self.equity(state), "holding_count": len(state["holdings"]),
-                                             "largest_exposures": exposure,
-                                             "symbol_basis": state["holdings"].get(symbol, {}).get("basis", 0.),
-                                             "proceeds_reusable": self.reuse,
-                                             "cost_fraction_each_side": self.cost, "fee": self.fee, "min_notional": self.minimum},
-                               "objective": {"starting_capital": START, "target": OBJECTIVE, "deadline": closing.isoformat()}
-                                            if self.challenge else {"target": "maximize net portfolio performance"},
-                               "alternatives": alternatives, "prior_conditional_plans": plans}
-                    lessons = self.lessons(db, now, symbol)
-                    if candidate["triggered_watches"]:
-                        self.event(db, state, now, "watch_triggered", {"symbol": symbol, "conditions": candidate["triggered_watches"]})
-                try:
-                    with stage_resources("ANALYZE"):
-                        decision = check_decision(self.decide(context, lessons), context)
-                except Exception as exc:
-                    with self.connect() as db:
-                        self.event(db, state, now, "analysis_error", {"symbol": symbol, "error": str(exc)[:500]})
+
+        if self.intelligence is not None:
+            self.intelligence.observe(bars, now, review=analyze)
+        if analyze:
+            self.analyze(now, time_source=time_source)
+        with self.connect() as db:
+            return self.state(db)
+
+    def analyze(self, now, *, time_source=None, limit=None):
+        """Build requests from the current ledger; infer outside its write lock."""
+        if not self.analysis_lock.acquire(blocking=False):
+            return 0
+        try:
+            return self._analyze(now, time_source, limit)
+        finally:
+            self.analysis_lock.release()
+
+    def _analyze(self, now, time_source, limit):
+        now = utc(now)
+        day = now.astimezone(EASTERN).date().isoformat()
+        completed = 0
+        with self.lock, self.connect() as db:
+            state = self.state(db)
+            if state["day"] != day or state["closed"] or state["goal_reached_at"]:
+                return 0
+            closing = self.closing(day)
+            if now >= closing:
+                return 0
+            ranked = self.latest_candidates(db, state, now)
+            ranking_report = [{"symbol": x["symbol"], "bar": x["asof"], "score": x["score"],
+                               **x.get("intelligence", {}).get("ranking", {}),
+                               "catalysts": x.get("intelligence", {}).get("catalysts", [])} for x in ranked[:20]]
+            db.execute("INSERT OR REPLACE INTO ranked_snapshot VALUES (1,?,?)", (now.isoformat(), dump(ranking_report)))
+            # Prioritize open positions and unresolved conditional plans; reserve
+            # capacity for discovery and order candidates by market score.
+            prior = {}
+            for x in ranked:
+                previous = db.execute("SELECT body FROM decisions WHERE day=? AND symbol=? ORDER BY id DESC LIMIT 1",
+                                      (day, x["symbol"])).fetchone()
+                if previous:
+                    prior[x["symbol"]] = json.loads(previous[0])
+                x["triggered_watches"] = triggered_watches(prior.get(x["symbol"], {}), x, x["symbol"] in state["holdings"])
+            eligible = [x for x in ranked if x["symbol"] not in state["pending"] and not db.execute(
+                "SELECT 1 FROM decisions WHERE day=? AND symbol=? AND bar=?",
+                (day, x["symbol"], x["asof"])).fetchone()]
+            eligible.sort(key=lambda x: (x["symbol"] not in state["holdings"], not x["triggered_watches"], -x["score"]))
+            selected = eligible[:limit or self.max_candidates]
+            discoveries = [x for x in eligible if x["symbol"] not in prior and x not in selected]
+            if discoveries and len(selected) > 1 and all(x["symbol"] in prior for x in selected):
+                selected[-1] = discoveries[0]
+            alternatives = [{"symbol": x["symbol"], "score": round(x["score"], 6),
+                             "return_6_bars": round(x["technical_facts"]["return_6_bars"], 5),
+                             "prior_forecast": prior.get(x["symbol"], {}).get("expected_return")}
+                            for x in ranked[:5]]
+        for candidate in selected:
+            with self.lock, self.connect() as db:
+                state = self.state(db)
+                symbol = candidate["symbol"]
+                if state["day"] != day or state["closed"] or state["goal_reached_at"]:
+                    break
+                if symbol in state["pending"]:
                     continue
-                submitted = utc(time_source()) if time_source else now
-                with self.connect() as db:
-                    state = self.state(db)
-                    # Archive even late analyses, but never execute against a past or
-                    # stale snapshot. Forward inference can take longer than a bar.
-                    ident = db.execute("INSERT INTO decisions(day,symbol,bar,submitted,body,context) VALUES(?,?,?,?,?,?)",
-                                       (day, symbol, candidate["asof"], submitted.isoformat(), dump(decision), dump(context))).lastrowid
-                    action = execution_action(decision)
-                    if action != "HOLD" and submitted < closing and submitted-utc(candidate["asof"]) <= timedelta(minutes=15):
-                        order = {"action": action, "submitted": submitted.isoformat(), "decision_id": ident}
-                        fraction = decision["allocation_fraction"]
-                        if action == "BUY":
-                            order["reserved"] = available*fraction
-                            if order["reserved"] >= self.minimum+self.fee:
-                                state["pending"][symbol] = order
-                        else:
-                            order["quantity"] = context["shares"]*fraction
-                            if order["quantity"] > 0:
-                                state["pending"][symbol] = order
-                        if symbol in state["pending"]:
-                            self.event(db, state, submitted, "order_queued", {"symbol": symbol, **order})
-                    if action != "HOLD" and symbol not in state["pending"]:
-                        self.event(db, state, submitted, "order_not_queued", {"symbol": symbol, "decision_id": ident,
-                                   "reason": "late/stale decision or insufficient buying power/position"})
-                    self.save(db, state)
-            with self.connect() as db:
-                return self.state(db)
+                reserved = sum(x.get("reserved", 0.) for x in state["pending"].values())
+                available = max(0., state["cash"]-reserved)
+                previous = db.execute("SELECT body FROM decisions WHERE symbol=? ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
+                plans = json.loads(previous[0])["explanation"]["conditional_actions"][:2] if previous else []
+                # Bound retrieved plan text independently of model output size.
+                plans = [{"action": p["action"], "trigger": p["trigger"][:140],
+                          "required_position": p["required_position"], "timeframe": p["timeframe"][:80]} for p in plans]
+                exposure = [{"symbol": sym, "value": round(pos["shares"] * state["marks"][sym]["price"], 6)}
+                            for sym, pos in sorted(state["holdings"].items(), key=lambda item: -item[1]["basis"])[:4]]
+                receipt = db.execute("SELECT received FROM bar_receipts WHERE symbol=? AND end=?",
+                                     (symbol,candidate["asof"])).fetchone()
+                context = {**candidate, "market_received_at": receipt[0] if receipt else None, "triggered_watches": candidate["triggered_watches"][:2],
+                           "observation_timeframe": "5-minute completed bars through "+candidate["asof"],
+                           "shares": state["holdings"].get(symbol, {}).get("shares", 0.),
+                           "portfolio": {"available_cash": available, "unsettled": state["unsettled"],
+                                         "equity": self.equity(state), "holding_count": len(state["holdings"]),
+                                         "largest_exposures": exposure,
+                                         "symbol_basis": state["holdings"].get(symbol, {}).get("basis", 0.),
+                                         "proceeds_reusable": self.reuse,
+                                         "cost_fraction_each_side": self.cost, "fee": self.fee, "min_notional": self.minimum},
+                           "objective": {"starting_capital": START, "target": OBJECTIVE, "deadline": closing.isoformat()}
+                                        if self.challenge else {"target": "maximize net portfolio performance"},
+                           "alternatives": alternatives, "prior_conditional_plans": plans}
+                lessons = self.lessons(db, now, symbol) if self.use_memory else []
+                if candidate["triggered_watches"]:
+                    self.event(db, state, now, "watch_triggered", {"symbol": symbol, "conditions": candidate["triggered_watches"]})
+            started = utc(time_source()) if time_source else now
+            timer = time.monotonic()
+            try:
+                with stage_resources("ANALYZE"):
+                    inference_started = time.monotonic()
+                    decision = check_decision(self.decide(context, lessons), context)
+            except Exception as exc:
+                with self.lock, self.connect() as db:
+                    self.event(db, self.state(db), utc(time_source()) if time_source else now,
+                               "analysis_error", {"symbol": symbol, "error": str(exc)[:500]})
+                continue
+            submitted = utc(time_source()) if time_source else now
+            with self.lock, self.connect() as db:
+                state = self.state(db)
+                row = db.execute("INSERT OR IGNORE INTO decisions(day,symbol,bar,submitted,body,context) VALUES(?,?,?,?,?,?)",
+                                 (day, symbol, candidate["asof"], submitted.isoformat(), dump(decision), dump(context)))
+                if not row.rowcount:
+                    continue
+                completed += 1
+                ident = row.lastrowid
+                self.event(db, {"day": day}, submitted, "analysis_completed",
+                           {"symbol": symbol, "decision_id": ident, "bar": candidate["asof"],
+                            "started": started.isoformat(), "finished": submitted.isoformat(),
+                            "market_received_at": context["market_received_at"],
+                            "feed_lag_seconds": (utc(context["market_received_at"])-utc(candidate["asof"])).total_seconds()
+                                if context["market_received_at"] else None,
+                            "queue_seconds": inference_started-timer,
+                            "inference_seconds": time.monotonic()-inference_started})
+                action = execution_action(decision)
+                if action == "HOLD":
+                    continue
+                current_shares = state["holdings"].get(symbol, {}).get("shares", 0.)
+                available_now = max(0., state["cash"]-sum(x.get("reserved", 0.) for x in state["pending"].values()))
+                reason = None
+                if state["day"] != day or state["closed"] or state["goal_reached_at"] or submitted >= closing:
+                    reason = "session or objective closed"
+                elif submitted-utc(candidate["asof"]) > timedelta(minutes=15):
+                    reason = "stale market snapshot"
+                elif symbol in state["pending"] or current_shares != context["shares"]:
+                    reason = "position or order changed during inference"
+                elif state["marks"].get(symbol, {}).get("end", "") > candidate["asof"]:
+                    reason = "newer stock snapshot arrived during inference"
+                fraction = decision["allocation_fraction"]
+                order = {"action": action, "submitted": submitted.isoformat(), "decision_id": ident}
+                if reason is None and action == "BUY":
+                    order["reserved"] = min(available, available_now)*fraction
+                    if order["reserved"] < self.minimum+self.fee:
+                        reason = "insufficient buying power"
+                if reason is None and action == "SELL":
+                    order["quantity"] = current_shares*fraction
+                    if order["quantity"] <= 0:
+                        reason = "no eligible holdings"
+                if reason:
+                    self.event(db, {"day": day}, submitted, "order_not_queued",
+                               {"symbol": symbol, "decision_id": ident, "reason": reason})
+                    continue
+                state["pending"][symbol] = order
+                self.event(db, state, submitted, "order_queued", {"symbol": symbol, **order})
+                self.save(db, state)
+        return completed
 
     def watchlist(self, now=None):
         with self.connect() as db:
@@ -565,7 +672,10 @@ def read_report(path):
         state = json.loads(db.execute("SELECT body FROM state WHERE id=1").fetchone()[0])
         equity = state["cash"] + state["unsettled"] + sum(max(0., p["shares"]*state["marks"][sym]["price"]*(1-config["cost"])-config["fee"])
                                                          for sym,p in state["holdings"].items())
-        return {"mode": config["mode"], "challenge": config["challenge"], "state": state,
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        heartbeat = db.execute("SELECT stamp FROM service_heartbeat WHERE id=1").fetchone() if "service_heartbeat" in tables else None
+        ranking = db.execute("SELECT stamp,body FROM ranked_snapshot WHERE id=1").fetchone() if "ranked_snapshot" in tables else None
+        return {"mode": config["mode"], "challenge": config["challenge"], "profile": config, "state": state,
                 "equity": equity, "buying_power_model": "immediate paper reuse" if config["reuse_proceeds"] else "next-session settlement",
                 "sessions": [json.loads(r[0]) for r in db.execute("SELECT body FROM sessions ORDER BY day")],
                 "events": dict(db.execute("SELECT kind,count(*) FROM events GROUP BY kind")),
@@ -573,6 +683,11 @@ def read_report(path):
                 "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0],
                 "latest_decisions": [{"symbol": sym, "bar": bar, "decision": json.loads(body)}
                     for sym,bar,body in db.execute("SELECT symbol,bar,body FROM decisions ORDER BY id DESC LIMIT 8")],
+                "service_checked_at": heartbeat[0] if heartbeat else None,
+                "last_quote_received": db.execute("SELECT MAX(received) FROM bar_receipts").fetchone()[0]
+                    if "bar_receipts" in tables else None,
+                "ranked_opportunities": json.loads(ranking[1]) if ranking else [],
+                "ranked_at": ranking[0] if ranking else None,
                 "recent_events": [{"time": stamp, "kind": kind, "detail": json.loads(body)}
                     for stamp,kind,body in db.execute("SELECT stamp,kind,body FROM events ORDER BY id DESC LIMIT 15")]}
 
@@ -599,6 +714,8 @@ def replay(engine, bars, warmup_sessions=0):
             groups[bar.end].append(bar)
     for end, group in sorted(groups.items()):
         engine.tick(group, end)
+    last = max(groups)
+    engine.tick([],last,finish=True,analyze=False)
     return engine.report()
 
 
@@ -608,6 +725,8 @@ def main():
     from app.config import settings
     p.add_argument("--db", default=settings.PAPER_DB_PATH)
     p.add_argument("--intelligence-db", help="Explicit evidence archive; replay still enforces original availability times")
+    p.add_argument("--quotes", help="Optional local JSONL bid/ask feed; Yahoo bars otherwise")
+    p.add_argument("--without-memory", action="store_true", help="Disable prior decision episodes for comparison")
     p.add_argument("--symbols", help="Comma-separated override; default US exchange listings")
     p.add_argument("--csv", help="Replay CSV: symbol,end,open,high,low,close,volume; end in UTC")
     p.add_argument("--warmup-sessions", type=int, default=1, help="Historical sessions loaded without inference or fills")
@@ -644,54 +763,14 @@ def main():
                          spread_bps=args.spread_bps, slippage_bps=args.slippage_bps, fee=args.fee,
                          min_notional=args.min_notional, reuse_proceeds=args.reuse_proceeds,
                          max_candidates=args.candidates, close=close,
-                         mode="replay" if args.command=="replay" else "forward")
+                         mode="replay" if args.command=="replay" else "forward", use_memory=not args.without_memory)
     if args.command == "replay":
         if not args.csv:
             p.error("replay requires --csv")
         print(json.dumps(replay(engine, read_replay(args.csv), args.warmup_sessions), indent=2))
         return
-    universe = []
-    refreshed = None
-    while True:
-        try:
-            now = datetime.now(UTC)
-            local = now.astimezone(EASTERN)
-            hours = market_close(local.date(), engine.close)
-            window = hours and (9,30) <= (local.hour,local.minute) and now <= engine.closing(local.date().isoformat()) + timedelta(minutes=31)
-            if not window and args.command != "once":
-                if intelligence is not None:
-                    intelligence.cycle()
-                engine.tick([], now)
-                time.sleep(args.poll)
-                continue
-            watch, cursor = engine.watchlist(now)
-            if not universe or refreshed != now.astimezone(EASTERN).date():
-                with stage_resources("ACQUIRE"):
-                    universe = sorted(set(args.symbols.upper().split(","))) if args.symbols else listed_symbols()
-                refreshed = now.astimezone(EASTERN).date()
-            if not universe:
-                raise ValueError("Empty configured market universe")
-            if intelligence is not None:
-                watch = sorted(set(watch+[symbol for symbol in intelligence.priority_symbols(now) if symbol in universe]))
-            cursor %= len(universe)
-            scan = (universe+universe)[cursor:cursor+min(args.batch,len(universe))]
-            with stage_resources("ACQUIRE"):
-                bars = yahoo_bars(sorted(set(scan+watch)), now)
-            engine.tick(bars, datetime.now(UTC), time_source=lambda: datetime.now(UTC), cursor=(cursor+len(scan))%len(universe))
-            report = engine.report()
-            if intelligence is not None:
-                intelligence.paper_audit(report, datetime.now(UTC))
-                intelligence.cycle(priority=watch)
-            print(dump(report), flush=True)
-        except KeyboardInterrupt:
-            return
-        except Exception as exc:
-            if args.command == "once":
-                raise
-            print("Paper poll failed: "+str(exc), flush=True)
-        if args.command == "once":
-            return
-        time.sleep(args.poll)
+    from app.paper_live import run_live
+    run_live(engine, args, intelligence)
 
 
 if __name__ == "__main__":

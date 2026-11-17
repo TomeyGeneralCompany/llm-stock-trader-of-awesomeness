@@ -27,15 +27,21 @@ class IntelligenceController:
         except Timeout:
             pass
 
-    def observe(self, bars, now):
-        """Paper observations are archived, never turned into orders by research."""
+    def observe(self, bars, now, *, review=True):
+        """Archive a poll in one transaction and register each symbol only once."""
         from app.paper_market import regular
-        for bar in bars:
-            if bar.end <= now:
-                body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
-                self.store.observe(bar.symbol, "5m", bar.end, body, now, "regular" if regular(bar) else "extended")
-                self.store.security(bar.symbol, {}, now)
-        self.evaluate(now)
+        with self.store.connect() as db:
+            symbols = set()
+            for bar in bars:
+                if bar.end <= now:
+                    body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
+                    self.store.observe(bar.symbol, "5m", bar.end, body, now,
+                                       "regular" if regular(bar) else "extended", connection=db)
+                    symbols.add(bar.symbol)
+            for symbol in symbols:
+                self.store.security(symbol, {}, now, connection=db)
+        if review:
+            self.evaluate(now)
 
     def cycle(self, now=None, *, priority=(), acquire=True, research=True):
         time_source = (lambda: datetime.now(UTC)) if now is None else None
@@ -138,7 +144,7 @@ class IntelligenceController:
         now = stamp(now)
         with self.store.connect() as db:
             rows = db.execute("""SELECT id,body,available FROM market_forecasts
-                WHERE symbol=? AND available<=? AND target>=? AND status='pending' ORDER BY available DESC LIMIT 3""", (symbol, now, now)).fetchall()
+                WHERE symbol=? AND available<=? AND target>=? ORDER BY available DESC LIMIT 3""", (symbol, now, now)).fetchall()
             relations = db.execute("""SELECT a.name subject,r.predicate,b.name object,r.evidence,r.available
                 FROM entity_relationships r JOIN entities a ON r.subject=a.id JOIN entities b ON r.object=b.id
                 WHERE r.available<=? AND (a.symbol=? OR b.symbol=? OR a.name=? OR b.name=?)
@@ -150,6 +156,7 @@ class IntelligenceController:
                     "direction": value["direction"], "expected_return": value["expected_return"],
                     "horizon_minutes": value["horizon_minutes"], "confidence": value["confidence"],
                     "invalidation": value["invalidation"][:80], "available": row["available"],
+                    "historical_reaction": value.get("historical_reaction"),
                     "evidence": [{key: citation[key] for key in ("chunk_id", "start", "end")} for citation in value["evidence"][:1]]}
             candidate = {**output, "catalysts": output["catalysts"] + [item]}
             if len(dump(candidate).encode()) <= max_bytes:
@@ -171,16 +178,34 @@ class IntelligenceController:
                 output = candidate
         return output
 
-    def rank(self, symbol, technical_score, now):
+    def rank(self, symbol, technical_score, now, *, bars=(), closing=None):
+        moment = datetime.fromisoformat(stamp(now))
         context = self.context(symbol, now)
-        score = technical_score
+        components = {"technical": technical_score, "catalyst": 0., "historical": 0., "liquidity": 0.}
+        # Closing availability matters for catalyst windows, but not for research.
+        minutes_left = max(0., (closing-moment).total_seconds()/60) if closing else None
+        if bars:
+            values = sorted(bar.close*bar.volume for bar in bars[-12:])
+            median_notional = values[len(values)//2]
+            components["liquidity"] = .01*min(1., math.log1p(median_notional)/math.log1p(1_000_000))
+        else:
+            median_notional = None
+        sample_count = 0
         for forecast in context["catalysts"]:
-            # Relevance, magnitude, confidence and freshness affect priority;
-            # a favorable story is not an execution signal.
             horizon = max(1, forecast["horizon_minutes"])
-            age = max(0., (datetime.fromisoformat(stamp(now))-datetime.fromisoformat(forecast["available"])).total_seconds())
-            score += min(1., abs(forecast["expected_return"])) * forecast["confidence"] * math.exp(-age/(horizon*60)) / math.sqrt(horizon)
-        return score, context
+            age = max(0., (moment-datetime.fromisoformat(forecast["available"])).total_seconds()/60)
+            freshness = math.exp(-age/horizon)
+            availability = min(1., minutes_left/horizon) if minutes_left is not None else 1.
+            components["catalyst"] += min(1., abs(forecast["expected_return"]))*forecast["confidence"]*freshness*availability/math.sqrt(horizon)
+            history = forecast.get("historical_reaction") or {}
+            n = history.get("sample_size",0)
+            if n and history.get("mean") is not None:
+                sample_count += n
+                # Shrink small samples toward zero; direction is still Qwen's decision.
+                components["historical"] += min(.15,abs(history["mean"]))*n/(n+10)*freshness*availability
+        context["ranking"] = {"components": components, "historical_samples": sample_count,
+                              "median_dollar_volume": median_notional, "minutes_remaining": minutes_left}
+        return sum(components.values()), context
 
     def paper_audit(self, report, now):
         """Mirror reported execution errors/results without modifying the paper DB."""
@@ -221,5 +246,11 @@ class IntelligenceController:
             for metric in ("mae", "directional_accuracy", "brier"):
                 group[metric] /= group["n"]
         result["accuracy"] = list(groups.values())
+        with self.store.connect() as db:
+            days = db.execute("""SELECT substr(observed,1,10) day, COUNT(*),
+                AVG(json_extract(body,'$.absolute_error')), AVG(json_extract(body,'$.direction_correct')),
+                AVG(json_extract(body,'$.brier')) FROM forecast_outcomes WHERE observed<=?
+                GROUP BY day ORDER BY day DESC LIMIT 30""", (now,)).fetchall()
+        result["accuracy_over_time"] = [dict(day=row[0],n=row[1],mae=row[2],directional_accuracy=row[3],brier=row[4]) for row in reversed(days)]
         result["execution_boundary"] = "Read-only intelligence; orders remain under the existing paper controller."
         return result

@@ -3,7 +3,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -38,6 +38,7 @@ def canonical(url):
 
 
 TABLES = {
+    "economic_observations": "source TEXT, series TEXT, observation_date TEXT, vintage_start TEXT, vintage_end TEXT, value REAL, acquired TEXT, version TEXT, PRIMARY KEY(source,series,observation_date,vintage_start,vintage_end,value)",
     "sources": "id TEXT PRIMARY KEY, body TEXT NOT NULL, next_due TEXT NOT NULL, last_success TEXT, failures INTEGER DEFAULT 0, error TEXT",
     "acquisition_jobs": "id INTEGER PRIMARY KEY, source TEXT, kind TEXT, payload TEXT, status TEXT, due TEXT, attempts INTEGER DEFAULT 0, lease TEXT, error TEXT, UNIQUE(source,kind,payload)",
     "securities": "symbol TEXT PRIMARY KEY, body TEXT, updated TEXT",
@@ -94,6 +95,7 @@ class IntelligenceStore:
                 db.execute(f"CREATE TABLE IF NOT EXISTS {name} ({fields})")
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(chunk UNINDEXED,body)")
             db.execute("CREATE INDEX IF NOT EXISTS evidence_availability ON document_versions(available)")
+            db.execute("CREATE INDEX IF NOT EXISTS economic_asof ON economic_observations(series,acquired,observation_date,vintage_start)")
             db.execute("CREATE INDEX IF NOT EXISTS observation_time ON market_observations(symbol,end,acquired)")
             db.execute("CREATE INDEX IF NOT EXISTS tasks_queue ON research_tasks(status,priority,updated)")
             if db.execute("PRAGMA user_version").fetchone()[0] < 1:
@@ -115,14 +117,17 @@ class IntelligenceStore:
         with self.connect() as db:
             db.execute("INSERT INTO intelligence_events(stamp,stage,body) VALUES(?,?,?)", (stamp(now), stage, dump(body)))
 
-    def security(self, symbol, metadata, now):
-        with self.connect() as db:
-            row = db.execute("SELECT body FROM securities WHERE symbol=?", (symbol,)).fetchone()
-            current = db.execute("SELECT updated FROM securities WHERE symbol=?", (symbol,)).fetchone()
-            body = json.loads(row[0]) if row and current["updated"]<=stamp(now) else {}
+    def security(self, symbol, metadata, now, *, connection=None):
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
+            row = db.execute("SELECT body,updated FROM securities WHERE symbol=?", (symbol,)).fetchone()
+            available = stamp(now)
+            present = row is not None and row["updated"]<=available
+            body = json.loads(row["body"]) if present else {}
             body.update({key: value for key, value in metadata.items() if value is not None and value != [] or key not in body})
             body["symbol"] = symbol
             encoded = dump(body)
+            if present and encoded == row["body"]:
+                return
             db.execute("INSERT OR IGNORE INTO security_versions VALUES(?,?,?,?)", (symbol, stamp(now), encoded, sha(encoded)))
             db.execute("INSERT INTO securities VALUES(?,?,?) ON CONFLICT(symbol) DO UPDATE SET body=excluded.body,updated=excluded.updated WHERE excluded.updated>=securities.updated", (symbol, encoded, stamp(now)))
             ident = sha("company:" + symbol)
@@ -136,7 +141,7 @@ class IntelligenceStore:
                 FROM security_versions WHERE available<=?) WHERE rank=1""", (stamp(now),)).fetchall()
         return {row["symbol"]: json.loads(row["body"]) for row in rows}
 
-    def observe(self, symbol, interval, end, body, acquired, session="regular"):
+    def observe(self, symbol, interval, end, body, acquired, session="regular", *, connection=None):
         end, acquired = stamp(end), stamp(acquired)
         if end > acquired:
             raise ValueError("Cannot archive an unfinished market observation.")
@@ -146,7 +151,7 @@ class IntelligenceStore:
             if not math.isfinite(value) or value < 0 or (key != "volume" and value == 0):
                 raise ValueError("Invalid market observation.")
         encoded = dump(body)
-        with self.connect() as db:
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
             db.execute("INSERT OR IGNORE INTO market_observations VALUES(?,?,?,?,?,?,?)",
                        (symbol, interval, end, acquired, session, encoded, sha(encoded)))
             db.execute("""INSERT INTO coverage VALUES(?,?,?,?,?,?,?)
@@ -254,12 +259,18 @@ class IntelligenceStore:
 
     def overview(self, now):
         with self.connect() as db:
-            counts = {name: db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in TABLES}
+            present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            counts = {name: db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] if name in present else 0 for name in TABLES}
             sources = [dict(r) for r in db.execute("SELECT id,last_success,next_due,failures,error FROM sources")]
             coverage = [dict(r) for r in db.execute("SELECT status,COUNT(*) count FROM coverage GROUP BY status")]
+            details = [dict(r) for r in db.execute("SELECT symbol,kind,status,earliest,latest FROM coverage ORDER BY last_success DESC LIMIT 25")]
+            details += [dict(r) for r in db.execute("""SELECT symbol,interval kind,session,'observed' status,
+                MIN(end) earliest,MAX(end) latest FROM market_observations WHERE symbol IN
+                (SELECT symbol FROM coverage ORDER BY last_success DESC LIMIT 25)
+                GROUP BY symbol,interval,session ORDER BY latest DESC LIMIT 25""")]
             tasks = [dict(r) for r in db.execute("SELECT id,question,status,priority,steps,error FROM research_tasks ORDER BY priority DESC,updated DESC LIMIT 20")]
             forecasts = [dict(r) for r in db.execute("SELECT id,symbol,available,target,status,body FROM market_forecasts ORDER BY available DESC LIMIT 20")]
             lessons = [dict(r) for r in db.execute("SELECT symbol,available,body FROM learned_lessons ORDER BY available DESC LIMIT 20")]
             logs = [dict(r) for r in db.execute("SELECT * FROM intelligence_events ORDER BY id DESC LIMIT 30")]
-        return {"asof": stamp(now), "counts": counts, "sources": sources, "coverage": coverage,
+        return {"asof": stamp(now), "counts": counts, "sources": sources, "coverage": coverage, "coverage_details": details,
                 "investigations": tasks, "forecasts": forecasts, "lessons": lessons, "activity": logs}

@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'backend/app/intelligence/**'
+      - 'backend/app/paper*.py'
+      - 'backend/app/llm/paper_schema.py'
       - '.github/workflows/intelligence-probe.yml'
 permissions:
   contents: read

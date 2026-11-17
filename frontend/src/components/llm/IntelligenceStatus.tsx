@@ -1,7 +1,20 @@
 'use client'
 import { useQuery } from '@tanstack/react-query'
 
+interface PaperStatus {
+  last_quote_received: string | null
+  ranked_at: string | null
+  ranked_opportunities: { symbol: string; score: number; bar: string; components?: Record<string, number>;
+    historical_samples?: number; median_dollar_volume?: number | null; minutes_remaining?: number | null;
+    catalysts: { evidence: { chunk_id: string }[] }[] }[]
+  sessions: { day: string; complete: boolean; achieved: boolean; equity: number; holdings: Record<string, unknown>; cash: number; unsettled: number }[]
+  latest_decisions: { symbol: string; bar: string; decision: {action: string; reasoning: string} }[]
+  recent_events: { time: string; kind: string; detail: {symbol?: string; price?: number; reason?: string; fill_method?: string} }[]
+}
+
 interface Status {
+  accuracy_over_time?: { day: string; n: number; mae: number; directional_accuracy: number; brier: number }[]
+  coverage_details?: {symbol: string; kind: string; session?: string; status: string; earliest: string | null; latest: string | null}[]
   status: string
   lessons: { symbol: string; available: string; body: string }[]
   activity: { id: number; stamp: string; stage: string; body: string }[]
@@ -22,12 +35,45 @@ export default function IntelligenceStatus() {
     },
     refetchInterval: 15000,
   })
+  const paper = useQuery<PaperStatus | null>({
+    queryKey: ['paper-intelligence-paper-status'],
+    queryFn: async () => {
+      const response = await fetch('http://localhost:8000/api/v1/paper/status')
+      if (response.status === 404) return null
+      if (!response.ok) throw new Error('Unable to load the local paper account')
+      return response.json()
+    },
+    refetchInterval: 15000,
+  })
   const data = query.data
   return (
     <section className="max-w-7xl mx-auto p-6 space-y-4" aria-label="Market intelligence">
       <h2 className="text-2xl font-semibold">Market intelligence</h2>
       {query.error && <p role="alert">{query.error.message}</p>}
       {!data && !query.error && <p>Loading evidence archive…</p>}
+      {paper.error && <p role="alert">{paper.error.message}</p>}
+      {paper.data && <>
+        <p className="text-sm">Last quote received {paper.data.last_quote_received || '— waiting for prices'}</p>
+        <details className="border rounded p-3">
+          <summary>Ranked opportunities</summary>
+          <p className="text-sm">Updated {paper.data.ranked_at || 'after the first scan'}</p>
+          {(paper.data.ranked_opportunities || []).map(item => <div className="my-3 text-sm" key={item.symbol}>
+            <strong>{item.symbol}</strong> · score {item.score.toFixed(4)}
+            <p>{Object.entries(item.components || {}).map(([name, score]) => name + ' ' + score.toFixed(4)).join(' · ')}</p>
+            <p>{item.historical_samples || 0} comparable observations · median dollar volume {item.median_dollar_volume?.toLocaleString() ?? 'unavailable'} · minutes remaining {item.minutes_remaining?.toFixed(0) ?? 'unavailable'}</p>
+            {item.catalysts.flatMap(catalyst => catalyst.evidence).map((evidence, index) => <a key={evidence.chunk_id + index} className="underline mr-3" href={'http://localhost:8000/api/v1/intelligence/evidence/' + encodeURIComponent(evidence.chunk_id) + '?asof=' + encodeURIComponent(paper.data?.ranked_at || item.bar)}>Evidence {index + 1}</a>)}
+          </div>)}
+        </details>
+        <details className="border rounded p-3">
+          <summary>Recent paper activity</summary>
+          {paper.data.latest_decisions.map(row => <p className="my-2 text-sm" key={row.symbol + row.bar}><strong>{row.symbol} {row.decision.action}</strong> · {row.bar} · {row.decision.reasoning}</p>)}
+          {paper.data.recent_events.filter(row => ['fill', 'unfilled', 'order_not_queued'].includes(row.kind)).map((row, index) => <p className="my-2 text-sm" key={index}><strong>{row.kind}</strong> · {row.time} · {row.detail.symbol} {row.detail.price ?? ''} {row.detail.fill_method || row.detail.reason || ''}</p>)}
+          {paper.data.sessions.slice(-5).map(row => {
+            const passed = row.complete && row.achieved && Object.keys(row.holdings).length === 0 && row.cash + row.unsettled >= 100
+            return <p key={row.day} className="my-2 text-sm"><strong>{row.day}</strong> · {passed ? 'Goal reached' : row.complete ? 'Session complete' : 'Incomplete session'} · equity {row.equity.toLocaleString('en-US', {style: 'currency', currency: 'USD'})}</p>
+          })}
+        </details>
+      </>}
       {data && <>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
