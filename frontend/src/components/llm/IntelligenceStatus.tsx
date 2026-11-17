@@ -7,7 +7,7 @@ interface PaperStatus {
   ranked_opportunities: { symbol: string; score: number; bar: string; components?: Record<string, number>;
     historical_samples?: number; median_dollar_volume?: number | null; minutes_remaining?: number | null;
     catalysts: { evidence: { chunk_id: string }[] }[] }[]
-  sessions: { day: string; complete: boolean; achieved: boolean; equity: number; holdings: Record<string, unknown>; cash: number; unsettled: number }[]
+  sessions: { day: string; complete: boolean; achieved: boolean; coverage?: { verified: boolean }; equity: number; holdings: Record<string, unknown>; cash: number; unsettled: number }[]
   latest_decisions: { symbol: string; bar: string; decision: {action: string; reasoning: string} }[]
   recent_events: { time: string; kind: string; detail: {symbol?: string; price?: number; reason?: string; fill_method?: string} }[]
 }
@@ -69,8 +69,8 @@ export default function IntelligenceStatus() {
           {paper.data.latest_decisions.map(row => <p className="my-2 text-sm" key={row.symbol + row.bar}><strong>{row.symbol} {row.decision.action}</strong> · {row.bar} · {row.decision.reasoning}</p>)}
           {paper.data.recent_events.filter(row => ['fill', 'unfilled', 'order_not_queued'].includes(row.kind)).map((row, index) => <p className="my-2 text-sm" key={index}><strong>{row.kind}</strong> · {row.time} · {row.detail.symbol} {row.detail.price ?? ''} {row.detail.fill_method || row.detail.reason || ''}</p>)}
           {paper.data.sessions.slice(-5).map(row => {
-            const passed = row.complete && row.achieved && Object.keys(row.holdings).length === 0 && row.cash + row.unsettled >= 100
-            return <p key={row.day} className="my-2 text-sm"><strong>{row.day}</strong> · {passed ? 'Goal reached' : row.complete ? 'Session complete' : 'Incomplete session'} · equity {row.equity.toLocaleString('en-US', {style: 'currency', currency: 'USD'})}</p>
+            const passed = row.coverage?.verified && row.complete && row.achieved && Object.keys(row.holdings).length === 0 && row.cash + row.unsettled >= 100
+            return <p key={row.day} className="my-2 text-sm"><strong>{row.day}</strong> · {!row.coverage ? 'Coverage unverified' : passed ? 'Goal reached' : row.complete ? 'Session complete' : 'Incomplete session'} · equity {row.equity.toLocaleString('en-US', {style: 'currency', currency: 'USD'})}</p>
           })}
         </details>
       </>}

@@ -1,4 +1,5 @@
 """Exercise the market-check plumbing separately from the network acceptance run."""
+from dataclasses import replace
 import hashlib
 import json
 from datetime import timezone
@@ -11,6 +12,7 @@ from test_paper_trader import day_bars, response
 
 def test_market_check_withholds_later_prices_and_preserves_provider_inputs(tmp_path):
     session=day_bars("SPY",day="2025-03-03",n=78,growth=.01)
+    session[35] = replace(session[35], volume=0)
     partial=day_bars("SPY",day="2025-03-04",n=50,growth=.2)
     acquired=partial[-1].end
     calls=[]
@@ -21,7 +23,9 @@ def test_market_check_withholds_later_prices_and_preserves_provider_inputs(tmp_p
     result=check_market(tmp_path,fetch=lambda *args,**kw: session+partial,
                         clock=lambda:acquired,decide=decide)
     assert calls==[session[34].end.astimezone(timezone.utc).isoformat()]
-    assert result["fills"]==1 and result["scored"]==1
+    assert result["fills"]==0 and result["scored"]==1
+    assert result["paper"]["events"]["unfilled"] == 1
+    assert result["paper"]["sessions"][0]["coverage"]["observed_bars"] == 78
     assert result["session"]=="2025-03-03"
     assert result["sha256"]==hashlib.sha256((tmp_path/"market-bars.json").read_bytes()).hexdigest()
 

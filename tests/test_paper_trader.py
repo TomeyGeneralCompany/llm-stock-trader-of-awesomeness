@@ -115,8 +115,9 @@ def test_realized_daily_goal_and_settlement(tmp_path, reuse):
     closing = datetime(2025,3,3,16,0,tzinfo=EASTERN)
     last = Bar("AAA", closing, 150, 151, 149, 150, 100000)
     engine.tick([last], last.end)
+    engine.tick([], last.end + timedelta(minutes=30), analyze=False)
     report = read_report(engine.path)
-    assert report["sessions"][0]["achieved"] and report["sessions"][0]["complete"]
+    assert report["sessions"][0]["achieved"] and not report["sessions"][0]["complete"]
     assert report["events"]["objective_achieved"] == 1
     tomorrow = day_bars(day="2025-03-04", price=5)
     state = engine.tick(tomorrow, tomorrow[-1].end)
@@ -273,3 +274,54 @@ def test_forward_quote_fill_uses_ask_and_checks_fractional_eligibility(tmp_path)
     whole=Quote("AAA",quote.time,quote.received,9.9,10.1,100,100)
     no_fractions.tick([],quote.received,analyze=False,quotes=[whole])
     assert no_fractions.report()["events"]["unfilled"]==1
+
+
+def test_close_only_cannot_verify_forward_session(tmp_path):
+    engine = PaperTrader(tmp_path / "paper.db", decide=lambda *_: None)
+    closing_bar = day_bars(n=78)[-1]
+    engine.tick([closing_bar], closing_bar.end, analyze=False)
+    engine.tick([], closing_bar.end + timedelta(minutes=30), analyze=False)
+    row = engine.report()["sessions"][0]
+    assert not row["complete"]
+    assert row["coverage"]["observed_bars"] == 1
+    assert len(row["coverage"]["missing_bar_ends"]) == 77
+    assert row["coverage"]["heartbeat_gaps"]
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_forward_coverage_survives_restart_but_late_backfill_cannot_hide_an_outage(tmp_path, gap):
+    path = tmp_path / "paper.db"
+    bars = day_bars(day="2025-11-28", n=42)
+    engine = PaperTrader(path, decide=lambda *_: None)
+    for index, bar in enumerate(bars):
+        if index == 15:
+            engine = PaperTrader(path, decide=lambda *_: None)
+        if gap and 16 <= index < 22:
+            continue
+        arrivals = bars[16:23] if gap and index == 22 else [bar]
+        engine.tick(arrivals, bar.end, analyze=False)
+    engine.tick([], bars[-1].end + timedelta(minutes=30), analyze=False)
+    session = engine.report()["sessions"][0]
+    coverage = session["coverage"]
+    assert coverage["expected_bars"] == coverage["observed_bars"] == 42
+    assert session["complete"] is not gap
+    assert bool(coverage["heartbeat_gaps"]) is gap
+    assert bool(coverage["late_or_unverified_bar_ends"]) is gap
+    assert not coverage["missing_bar_ends"]
+
+
+def test_timing_distinguishes_market_time_receipt_and_stale_order(tmp_path):
+    engine = PaperTrader(tmp_path / "paper.db", decide=lambda ctx, _: response(ctx, "BUY"))
+    bars = day_bars()
+    received = bars[-1].end + timedelta(minutes=2)
+    finished = received + timedelta(minutes=15)
+    engine.tick(bars, received, time_source=lambda: finished)
+    timing = engine.report()["analysis_timing"]
+    assert timing["completed"] == timing["rejected"] == 1
+    assert timing["queued"] == timing["current_when_finished"] == 0
+    row = timing["recent"][0]
+    assert row["bar"] == bars[-1].end.astimezone(UTC).isoformat()
+    assert row["market_received_at"] == received.astimezone(UTC).isoformat()
+    assert row["inference_started_at"] <= row["finished"]
+    assert row["feed_lag_seconds"] == 120
+    assert row["reason"] == "stale market snapshot"

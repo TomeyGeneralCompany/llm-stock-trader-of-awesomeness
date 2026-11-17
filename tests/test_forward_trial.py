@@ -45,15 +45,18 @@ def test_trial_cannot_substitute_later_day_or_count_open_equity():
     profile={"challenge":True}
     manifest={"days":dates,"runtime":runtime,"profile_hash":profile_digest(profile),"start":1.,"target":100.}
     rows=[{"day":day,"start":1.,"complete":True,"achieved":True,"holdings":{},"runtime":runtime,
-           "cash":100.,"unsettled":0.,"goal_reached_at":"timestamp"} for day in dates]
+           "cash":100.,"unsettled":0.,"goal_reached_at":"timestamp",
+           "coverage":{"mode":"forward","verified":True}} for day in dates]
     report={"profile":profile,"sessions":rows}
     assert evaluation(manifest,report)["passed"]
+    rows[2]["coverage"]["verified"] = False
+    rows[3].pop("coverage")
     rows[0]["holdings"]={"AAA":{"shares":1}}
     rows[1]["runtime_changed"]=True
     rows[-1]["day"]="2025-03-10"
     result=evaluation(manifest,report)
     assert not result["passed"]
-    assert [r["result"] for r in result["sessions"]]==["miss","configuration_changed","pass","pass","missing"]
+    assert [r["result"] for r in result["sessions"]]==["miss","configuration_changed","incomplete","coverage_unverified","missing"]
 
 
 def test_comparison_passes_identical_observations_to_all_policies(tmp_path):
