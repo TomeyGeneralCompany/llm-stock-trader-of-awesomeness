@@ -40,7 +40,7 @@ Historical replay uses a separate paired intelligence database by default and ne
 
 ## Validation
 
-The suite includes acquisition parsing, original/version/chunk preservation, source outages/weekend scheduling, quoted-reference validation, restart recovery, future/revision exclusion, event-study arithmetic, unobserved forecast retention, grouped accuracy and a complete acquisition-to-research-to-ranked-paper-decision-to-fill-to-observation-to-lesson retrieval fixture. Frontend types/build and existing paper/backtest regressions run on GitHub. The separate intelligence probe workflow exercises the real local Qwen model against explicitly synthetic evidence; no market performance or daily-goal achievement is inferred from it.
+The suite includes acquisition parsing, original/version/chunk preservation, source outages/weekend scheduling, quoted-reference validation, restart recovery, future/revision exclusion, event-study arithmetic, unobserved forecast retention, grouped accuracy and a complete acquisition-to-research-to-ranked-paper-decision-to-fill-to-observation-to-lesson retrieval fixture. Frontend types/build and existing paper/backtest regressions run on GitHub. The default Qwen acceptance workflow downloads actual market bars and scores a paper forecast against withheld observations. The synthetic research probe remains available as an isolated diagnostic through app.intelligence.probe.
 
 Research generation sends its typed JSON schema through Ollama's native format field. The controller still validates exact source quotations, available times, registered securities and semantic consistency; a structurally valid answer can still be rejected. Existing callers retain their original JSON/prose defaults and inference controls.
 

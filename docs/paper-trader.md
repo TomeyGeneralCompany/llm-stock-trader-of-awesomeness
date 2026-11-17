@@ -77,3 +77,14 @@ Preview the same allowlisted data that would be sent:
     PYTHONPATH=backend uv run --locked python -m app.paper_status_publish --preview --trial data/five-session-trial.json
 
 The trial argument is optional. For remote viewing, configure a separate private GitHub repository and expose a repository-scoped Contents write token to the publisher as PAPER_STATUS_GITHUB_TOKEN. Run the publisher with --repo OWNER/REPO (and --branch if the destination uses a branch other than main). The destination can be viewed as paper-trader-status.json on GitHub. Add --interval 300 to refresh it every five minutes while the publisher command is running. The service-check timestamp distinguishes an active trader from a separate publisher that is still running. The publisher verifies private visibility before writing and omits raw prompts, system paths and account credentials. Publishing is separate from the trading service.
+
+
+## Check Qwen against observed market prices
+
+The GitHub workflow **Qwen paper trader with real market data** downloads actual SPY five-minute bars. It selects the most recent complete regular session in the download, gives Qwen the first 35 bars and a $1 paper account, and withholds the remaining bars until after the decision. The resulting replay uses the normal paper ledger. HOLD is a valid result. The run saves the exact downloaded bars, retrieval time, source, decision and account record. A provider failure fails the check.
+
+Run the same check from the repository root with Ollama running:
+
+    PYTHONPATH=backend uv run --locked python -m app.paper_market_check --output data/observed-market-check
+
+Use a fresh output directory each run. This check exercises actual historical market observations. The forward five-session trial records observations as received on the laptop.
