@@ -110,7 +110,7 @@ OLLAMA_THINK=false
 OLLAMA_TIMEOUT_SECONDS=0
 ```
 
-Change `OLLAMA_MODEL` to the exact installed tag if you use a different Qwen 3 build. No cloud credentials are required, and old provider API keys do not select a different provider.
+Change `OLLAMA_MODEL` to the exact installed tag if you use a different Qwen 3 build. Ollama supplies all model inference.
 
 Trading decisions, retrospective analysis, and daily feedback all use this local client. Model requests and pipeline stages share the installation's heavy-work resource slot. Trading decisions use Ollama's JSON output mode; feedback and reviews use English text. `OLLAMA_THINK=false` selects direct answers so thinking does not consume the existing output-token budgets. Thinking is configurable, but longer thinking may require larger response budgets in the calling feature.
 

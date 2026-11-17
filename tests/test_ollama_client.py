@@ -41,14 +41,11 @@ def test_defaults_use_qwen_without_cloud_credentials(monkeypatch):
     for key in ("AZURE_OPENAI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.setenv(key, "old-unused-key")
     config = local_ai.LLMClientConfig()
-    assert config.provider == "ollama"
     assert config.model == "qwen3:4b"
     assert config.num_thread == 4
     assert config.num_ctx == 8192
     assert config.timeout_seconds == 0
     assert not config.think
-    with pytest.raises(ValueError, match="Only the local Ollama"):
-        local_ai.get_llm_client(provider="azure")
 
 
 def test_env_settings_and_old_env_file_are_compatible(tmp_path):
@@ -123,7 +120,7 @@ def test_configured_client_prose_and_runtime_overrides(mock_ollama):
         timeout_seconds=900,
     )
     assert (
-        local_ai.get_configured_client(config).invoke("Review this decision").content
+        config.create_client().invoke("Review this decision").content
         == "English strategy review."
     )
 
