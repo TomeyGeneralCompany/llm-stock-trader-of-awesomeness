@@ -2,7 +2,6 @@
 Backtest analysis endpoints for retrieving and analyzing historical backtest data.
 """
 
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.llm.client import get_llm_client
 from app.llm.memory import review_context
-from app.utils.backtest_logger import BacktestLogger
+from app.utils.backtest_logger import BacktestLogger, backtest_log_path
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -131,12 +130,13 @@ def resolve_run_session(conn, run_id: str) -> str:
 async def get_available_dates_by_run_id(
     run_id: str,
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
-    db_path: str = Query("backend/data/backtest_logs.db", description="Database path"),
+    db_path: Optional[str] = Query(None, description="Database path"),
 ) -> AvailableDatesResponse:
     """
     Get available dates for a specific run_id by mapping it to session_id.
     """
     try:
+        db_path = db_path or backtest_log_path()
         # Check if database exists
         if not Path(db_path).exists():
             raise HTTPException(status_code=404, detail="Database file not found")
@@ -186,12 +186,13 @@ async def get_available_dates_by_run_id(
 @router.get("/available-dates", response_model=AvailableDatesResponse)
 async def get_available_dates(
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
-    db_path: str = Query("backend/data/backtest_logs.db", description="Database path"),
+    db_path: Optional[str] = Query(None, description="Database path"),
 ) -> AvailableDatesResponse:
     """
     Get all available dates from backtest logs.
     """
     try:
+        db_path = db_path or backtest_log_path()
         # Check if database exists
         if not Path(db_path).exists():
             raise HTTPException(status_code=404, detail="Database file not found")
@@ -234,7 +235,7 @@ async def get_day_analysis(
     run_id: str,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
-    db_path: str = Query("backend/data/backtest_logs.db", description="Database path"),
+    db_path: Optional[str] = Query(None, description="Database path"),
     include_retrospective: bool = Query(
         True, description="Include LLM retrospective analysis"
     ),
@@ -243,6 +244,7 @@ async def get_day_analysis(
     Get detailed analysis for a specific date.
     """
     try:
+        db_path = db_path or backtest_log_path()
         # Validate date format
         try:
             datetime.strptime(date, "%Y-%m-%d")
@@ -255,9 +257,7 @@ async def get_day_analysis(
         if not Path(db_path).exists():
             raise HTTPException(status_code=404, detail="Database file not found")
 
-        # Debug: First check what session_ids exist in database
         conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
 
         try:
             actual_session_id = resolve_run_session(conn, run_id)
@@ -499,12 +499,13 @@ Please use professional but concise language, keeping within 800 words. Highligh
 @router.get("/session-dates/{session_id}", response_model=AvailableDatesResponse)
 async def get_session_dates(
     session_id: str,
-    db_path: str = Query("backend/data/backtest_logs.db", description="Database path"),
+    db_path: Optional[str] = Query(None, description="Database path"),
 ) -> AvailableDatesResponse:
     """
     Get available dates for a specific session.
     """
     try:
+        db_path = db_path or backtest_log_path()
         if not Path(db_path).exists():
             raise HTTPException(status_code=404, detail="Database file not found")
 

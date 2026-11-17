@@ -38,6 +38,15 @@ def write_summary(output, result):
         lines += [f"**{result['status']}**", "", html.escape(result["error"])]
     else:
         decision = result["decision"]
+        timing = result["paper"]["analysis_timing"]
+        attempt = next((row for row in timing["recent"] if "model_calls" in row), None)
+        performance = []
+        if attempt:
+            performance.append(
+                f"**Decision timing:** {attempt['model_calls']} model call(s), "
+                f"first-pass valid {'yes' if attempt['first_pass_success'] else 'no'}, "
+                f"{attempt['first_pass_seconds']:.1f}s first pass, {attempt['retry_seconds']:.1f}s retry."
+            )
         lines += [
             f"**Source:** Yahoo Finance via yfinance. **Symbol:** {result['symbol']}. **Session:** {result['session']} (Eastern).",
             f"Downloaded at {result['received_utc']}. Replayed {result['bars']} completed five-minute bars.",
@@ -45,6 +54,7 @@ def write_summary(output, result):
             "The remaining observations were withheld until after the decision.",
             "",
             f"**Qwen:** {decision['action']} · **Simulated fills:** {result['fills']} · **Forecasts scored:** {result['scored']}.",
+            *performance,
             "This is historical replay on observed data. See the market-data artifact for the exact inputs and provenance.",
             "",
             "## Validated decision",

@@ -1,8 +1,8 @@
 """Continuous intelligence scheduling, learning and read-only paper-trader integration."""
+from collections import defaultdict
 import json
 import math
 from datetime import datetime, timedelta
-from pathlib import Path
 from filelock import FileLock, Timeout
 
 from app.stage_resources import stage_resources
@@ -27,19 +27,19 @@ class IntelligenceController:
         except Timeout:
             pass
 
-    def observe(self, bars, now, *, review=True):
+    def observe(self, bars, now, *, review=True, source="paper"):
         """Archive a poll in one transaction and register each symbol only once."""
         from app.paper_market import regular
-        with self.store.connect() as db:
-            symbols = set()
-            for bar in bars:
-                if bar.end <= now:
-                    body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
-                    self.store.observe(bar.symbol, "5m", bar.end, body, now,
-                                       "regular" if regular(bar) else "extended", connection=db)
-                    symbols.add(bar.symbol)
-            for symbol in symbols:
-                self.store.security(symbol, {}, now, connection=db)
+        observed = defaultdict(list)
+        for bar in bars:
+            if bar.end <= now:
+                body = {key: getattr(bar, key) for key in ("open", "high", "low", "close", "volume")}
+                observed[bar.symbol].append((bar.end, body, "regular" if regular(bar) else "extended"))
+        if observed:
+            with self.store.connect() as db:
+                for symbol, rows in observed.items():
+                    self.store.observe_batch(symbol, "5m", rows, now, connection=db, source=source)
+                    self.store.security(symbol, {}, now, connection=db)
         if review:
             self.evaluate(now)
 
@@ -52,8 +52,6 @@ class IntelligenceController:
                 # Holdings/pending plans can accelerate their evidence acquisition.
                 with self.store.connect() as db:
                     db.execute("INSERT OR REPLACE INTO intelligence_state VALUES(?,?)", ("priority_symbols", dump(list(dict.fromkeys(list(priority)+self.priority_symbols(now))))))
-                    for symbol in priority:
-                        db.execute("UPDATE acquisition_jobs SET due=? WHERE kind='market' AND json_extract(payload,'$.symbol')=? AND status='queued'", (now, symbol))
                 acquired = 0
                 if acquire:
                     with stage_resources("ACQUIRE"):
@@ -140,7 +138,7 @@ class IntelligenceController:
             rows = db.execute("SELECT body FROM learned_lessons WHERE symbol=? AND available<=? ORDER BY available DESC LIMIT ?", (symbol, stamp(now), limit)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
-    def context(self, symbol, now, max_bytes=1200):
+    def context(self, symbol, now, max_bytes=1200, *, include_details=True, include_lessons=True):
         now = stamp(now)
         with self.store.connect() as db:
             rows = db.execute("""SELECT id,body,available FROM market_forecasts
@@ -148,7 +146,7 @@ class IntelligenceController:
             relations = db.execute("""SELECT a.name subject,r.predicate,b.name object,r.evidence,r.available
                 FROM entity_relationships r JOIN entities a ON r.subject=a.id JOIN entities b ON r.object=b.id
                 WHERE r.available<=? AND (a.symbol=? OR b.symbol=? OR a.name=? OR b.name=?)
-                ORDER BY r.available DESC LIMIT 2""", (now, symbol, symbol, symbol, symbol)).fetchall()
+                ORDER BY r.available DESC LIMIT 2""", (now, symbol, symbol, symbol, symbol)).fetchall() if include_details else ()
         output = {"catalysts": [], "relationships": [], "lessons": []}
         for row in rows:
             value = json.loads(row["body"])
@@ -166,7 +164,7 @@ class IntelligenceController:
             candidate = {**output, "relationships": output["relationships"] + [item]}
             if len(dump(candidate).encode()) <= max_bytes:
                 output = candidate
-        for lesson in self.lessons(symbol, now):
+        for lesson in self.lessons(symbol, now) if include_details and include_lessons else ():
             item = {"actual_return": lesson.get("actual_return"), "absolute_error": lesson.get("absolute_error"),
                     "direction_correct": lesson.get("direction_correct"), "error_classes": lesson.get("error_classes"), "kind": lesson.get("kind", "forecast"), "outcome": lesson.get("outcome")}
             if lesson.get("causal_review"):
@@ -178,9 +176,9 @@ class IntelligenceController:
                 output = candidate
         return output
 
-    def rank(self, symbol, technical_score, now, *, bars=(), closing=None):
+    def rank(self, symbol, technical_score, now, *, bars=(), closing=None, include_details=True):
         moment = datetime.fromisoformat(stamp(now))
-        context = self.context(symbol, now)
+        context = self.context(symbol, now, include_details=include_details)
         components = {"technical": technical_score, "catalyst": 0., "historical": 0., "liquidity": 0.}
         # Closing availability matters for catalyst windows, but not for research.
         minutes_left = max(0., (closing-moment).total_seconds()/60) if closing else None
@@ -207,12 +205,18 @@ class IntelligenceController:
                               "median_dollar_volume": median_notional, "minutes_remaining": minutes_left}
         return sum(components.values()), context
 
-    def paper_audit(self, report, now):
-        """Mirror reported execution errors/results without modifying the paper DB."""
-        for event in report.get("recent_events", []):
-            body = dump(event)
-            ident = sha(body)
-            with self.store.connect() as db:
+    def paper_audit_cursor(self, ledger):
+        with self.store.connect() as db:
+            row = db.execute("SELECT value FROM intelligence_state WHERE key=?",
+                             ("paper_audit:" + ledger,)).fetchone()
+            return int(row[0]) if row else 0
+
+    def paper_audit(self, report, now, *, ledger=None, through=None):
+        """Mirror paper events and advance the cursor in the same transaction."""
+        with self.store.connect() as db:
+            for event in report.get("recent_events", []):
+                body = dump(event)
+                ident = sha(body)
                 inserted = db.execute("INSERT OR IGNORE INTO paper_audit VALUES(?,?,?)", (ident, stamp(now), body)).rowcount
                 detail = event.get("detail", {})
                 if inserted and detail.get("symbol") and event.get("kind") in ("fill", "unfilled", "expired", "order_not_queued", "analysis_error"):
@@ -221,6 +225,12 @@ class IntelligenceController:
                               "outcome": detail.get("realized_pnl"), "causal_interpretation": "Observed paper processing/execution result; economic cause is not inferred.",
                               "available_at_decision": event.get("time")}
                     db.execute("INSERT OR IGNORE INTO learned_lessons VALUES(?,?,?,?)", (sha("paper:"+ident), detail["symbol"], stamp(now), dump(lesson)))
+
+            if ledger is not None:
+                db.execute("""INSERT INTO intelligence_state VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+                    WHERE CAST(intelligence_state.value AS INTEGER)<CAST(excluded.value AS INTEGER)""",
+                           ("paper_audit:" + ledger, str(through)))
 
     def overview(self, now=None):
         now = stamp(now)

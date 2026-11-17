@@ -325,3 +325,116 @@ def test_timing_distinguishes_market_time_receipt_and_stale_order(tmp_path):
     assert row["inference_started_at"] <= row["finished"]
     assert row["feed_lag_seconds"] == 120
     assert row["reason"] == "stale market snapshot"
+
+
+def test_ranking_reuses_unchanged_features_and_refreshes_changed_window(tmp_path, monkeypatch):
+    from app import paper_trader
+
+    calculated = []
+    original = paper_trader.features
+
+    def trace(bars):
+        calculated.append(bars[-1].symbol)
+        return original(bars)
+
+    monkeypatch.setattr(paper_trader, "features", trace)
+    engine = PaperTrader(tmp_path / "paper.db", lambda ctx, _: response(ctx), max_candidates=2)
+    a, b = day_bars("AAA"), day_bars("BBB")
+    now = a[-1].end
+    engine.tick(a + b, now)
+    assert engine.analyze(now) == 0
+    assert calculated == ["AAA", "BBB"]
+    new_bar = next_bar(a[-1])
+    engine.tick([new_bar], new_bar.end)
+    assert calculated == ["AAA", "BBB", "AAA"]
+    assert engine.report()["forecasts"] == 3
+
+
+def test_paper_native_hold_execution_mode_is_derived_without_retry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import paper_trader
+
+    requests = []
+
+    def invoke(prompt):
+        requests.append(prompt)
+        context = json.loads(prompt.split("Controller state:\n")[1].split("\nPrior outcomes")[0])
+        raw = response(context)
+        raw["explanation"]["execution"]["mode"] = "now"
+        return SimpleNamespace(content=json.dumps(raw))
+
+    client = SimpleNamespace(config=SimpleNamespace(num_ctx=8192, max_tokens=1800), invoke=invoke)
+    monkeypatch.setattr(paper_trader, "get_llm_client", lambda **_: client)
+    engine = PaperTrader(tmp_path / "paper.db")
+    bars = day_bars()
+    engine.tick(bars, bars[-1].end)
+    report = engine.report()
+    assert report["latest_decisions"][0]["decision"]["explanation"]["execution"]["mode"] == "wait"
+    assert "mode" not in client.config.response_schema["properties"]["explanation"]["properties"]["execution"]["properties"]
+    timing = report["analysis_timing"]["recent"][0]
+    assert timing["first_pass_success"] is True
+    assert timing["model_calls"] == len(requests) == 1
+    assert timing["retry_seconds"] == 0
+    assert timing["candidate_preparation_seconds"] >= 0
+
+
+def test_forward_worker_skips_expired_snapshot_before_inference(tmp_path):
+    import time
+
+    invoked = []
+    engine = PaperTrader(tmp_path / "paper.db", lambda ctx, _: invoked.append(ctx))
+    bars = day_bars()
+    now = bars[-1].end
+    engine.tick(bars, now, analyze=False)
+    engine.analyze(now, time_source=lambda: now + timedelta(minutes=16),
+                   submitted_at=time.monotonic() - 1)
+    assert not invoked
+    timing = engine.report()["analysis_timing"]
+    assert timing["skipped_before_inference"] == 1
+    assert timing["recent"][0]["worker_wait_seconds"] >= 1
+
+
+def test_live_portfolio_poll_continues_during_blocked_discovery(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from app import paper_live, paper_trial
+
+    engine = PaperTrader(tmp_path / "paper.db", lambda ctx, _: response(ctx, "BUY"))
+    bars = day_bars()
+    now = bars[-1].end
+    engine.tick(bars, now)
+    assert "AAA" in engine.report()["state"]["pending"]
+
+    discovery_started = Event()
+    release_discovery = Event()
+    portfolio_calls = []
+
+    def fetch(symbols, now, **_):
+        if symbols == ["AAA"]:
+            portfolio_calls.append(now)
+            return [bars[-1]]
+        assert symbols == ["BBB"]
+        discovery_started.set()
+        if not release_discovery.wait(2):
+            pytest.fail("Discovery was not released by the portfolio poll")
+        return []
+
+    def wait_for_next_poll(_):
+        if len(portfolio_calls) < 2:
+            assert discovery_started.wait(2)
+        else:
+            assert not release_discovery.is_set()
+            release_discovery.set()
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(paper_live, "clock", lambda: now)
+    monkeypatch.setattr(paper_live, "yahoo_bars", fetch)
+    monkeypatch.setattr(paper_live, "time", SimpleNamespace(
+        monotonic=paper_live.time.monotonic, sleep=wait_for_next_poll))
+    monkeypatch.setattr(paper_trial, "runtime_identity", lambda *_: {})
+    with pytest.raises(KeyboardInterrupt):
+        paper_live.run_live(engine, SimpleNamespace(quotes=None, command="run", symbols="AAA,BBB",
+                                                   batch=2, poll=1), None)
+    assert len(portfolio_calls) == 2

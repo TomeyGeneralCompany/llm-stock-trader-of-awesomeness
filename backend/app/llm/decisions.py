@@ -3,12 +3,14 @@
 import math
 import re
 
-EXPLANATION_INSTRUCTIONS = """explanation (concise English):
+EXPLANATION_FIELDS = """explanation (concise English):
 - observed_state: timeframe, position (flat/long), market_phase, macd_cross, macd_alignment (above/below/equal/unknown), evidence (list). Copy controller facts; alignment is not a new crossover.
 - interpretation: explain current action and conflicting evidence; distinguish timeframes and inference.
 - forecast: scenario, timeframe, assumptions (nonempty list), invalidation. Future crosses are not observations.
 - conditional_actions: nonempty list of action (BUY/SELL/HOLD), trigger, timeframe, required_position (flat/long/any), prerequisite, reasoning. Future SELL requires long, after entry if flat.
-- risk_assessment: evidence (list of exact controller keys e.g. current.close), rationale, downside. No guaranteed safety.
+- risk_assessment: evidence (list of exact controller keys e.g. current.close), rationale, downside. No guaranteed safety."""
+
+EXPLANATION_INSTRUCTIONS = EXPLANATION_FIELDS + """
 - execution: mode (now/wait), evidence (same key format), rationale. BUY/SELL only now on observed evidence; unmet triggers require HOLD/wait and conditional_actions."""
 
 

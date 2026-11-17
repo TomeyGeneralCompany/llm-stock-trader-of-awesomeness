@@ -29,6 +29,12 @@ The service also acquires public economic/corporate evidence outside trading hou
 
 Historical backtests use a finite controller-owned portfolio, next-open fills, working capital/risk/commission controls, and net ledger-derived performance. See [execution and accounting](docs/execution-and-accounting.md).
 
+### Existing backtest logs
+
+Backtest history now defaults to `data/backtest_logs.db` from the repository root. Set `BACKTEST_LOG_DB_PATH` to use a different file. Backtest writers and history endpoints use the same path.
+
+Before updating an older checkout that has sessions you want to keep, stop the dashboard and copy its actual database into `data/backtest_logs.db` if that destination does not already exist. Older installs wrote to either `backend/data/backtest_logs.db` or `backend/backend/data/backtest_logs.db`, depending on the working directory. The latter file was tracked, so back it up before applying the update. A remaining legacy file is copied automatically on first access if there is exactly one source and the destination is absent. If you have both old files, retain both backups and select the one to use. The previously committed database remains available in Git at `55f79fb:backend/backend/data/backtest_logs.db`.
+
 ## System Architecture
 
 ```mermaid

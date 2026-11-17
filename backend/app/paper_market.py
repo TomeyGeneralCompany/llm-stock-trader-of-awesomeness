@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import csv
 import io
+import logging
 import math
 import re
 
@@ -150,26 +151,19 @@ def normalize_history(frame, symbol, now):
 
 
 def yahoo_bars(symbols, now, *, period="5d", start=None):
-    """Bounded batches; missing symbols remain missing, never synthesized."""
+    """Fetch per ticker so discovery and position polling have independent results."""
     result = []
-    for offset in range(0, len(symbols), 32):
-        batch = symbols[offset:offset + 32]
-        if not batch:
+    history = {"start": start} if start is not None else {"period": period}
+    for symbol in symbols:
+        # yf.download shares a process-global result buffer between batches.
+        # Ticker.history returns this ticker's own result.
+        try:
+            frame = yf.Ticker(symbol).history(**history, interval="5m", auto_adjust=False,
+                                              prepost=False, actions=False, timeout=20, raise_errors=True)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Yahoo bars unavailable for %s: %s", symbol, exc)
             continue
-        history = {"start": start} if start is not None else {"period": period}
-        frame = yf.download(batch, **history, interval="5m", group_by="ticker",
-                            auto_adjust=False, prepost=False, progress=False,
-                            threads=False, timeout=20)
-        for symbol in batch:
-            if isinstance(frame.columns, pd.MultiIndex):
-                if symbol not in frame.columns.get_level_values(0):
-                    continue
-                part = frame[symbol]
-            elif len(batch) == 1:
-                part = frame
-            else:
-                continue
-            result.extend(normalize_history(part, symbol, now))
+        result.extend(normalize_history(frame, symbol, now))
     return result
 
 

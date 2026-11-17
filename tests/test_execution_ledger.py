@@ -201,3 +201,26 @@ def test_independent_review_rejects_invented_protective_trigger():
     output["trades"][-1]["reason"]="stop_loss"
     with pytest.raises(ValueError,match="price trigger"):
         validate_accounting(output,analysis)
+
+
+def test_backtest_migration_preserves_legacy_sessions_and_uses_one_path(tmp_path, monkeypatch):
+    import sqlite3
+
+    from app.utils import backtest_logger
+
+    legacy = tmp_path / "backend" / "backend" / "data" / "backtest_logs.db"
+    backtest_logger.BacktestLogger(legacy)
+    with sqlite3.connect(legacy) as db:
+        db.execute("CREATE TABLE migration_check (label TEXT)")
+        db.execute("INSERT INTO migration_check VALUES ('existing session')")
+    target = tmp_path / "data" / "backtest_logs.db"
+    monkeypatch.setattr(backtest_logger, "env_path", tmp_path / ".env")
+    monkeypatch.setattr(backtest_logger.settings, "BACKTEST_LOG_DB_PATH", str(target))
+    assert backtest_logger.BacktestLogger().db_path == target
+    assert legacy.exists()
+    with sqlite3.connect(target) as db:
+        assert db.execute("SELECT label FROM migration_check").fetchone() == ("existing session",)
+        db.execute("INSERT INTO migration_check VALUES ('new session')")
+    assert backtest_logger.backtest_log_path() == target
+    with sqlite3.connect(target) as db:
+        assert db.execute("SELECT COUNT(*) FROM migration_check").fetchone()[0] == 2

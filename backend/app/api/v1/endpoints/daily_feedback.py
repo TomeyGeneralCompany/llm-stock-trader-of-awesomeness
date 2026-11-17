@@ -3,16 +3,13 @@ Daily Decision Improvement API
 Decision improvement suggestions for a specific date
 """
 
-import json
-import os
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.llm.client import OllamaError, get_llm_client
 from app.llm.memory import review_context
-from app.utils.backtest_logger import BacktestLogger
+from app.utils.backtest_logger import BacktestLogger, backtest_log_path
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -42,8 +39,7 @@ async def analyze_daily_decision(
     """
     try:
         # 1. Use consistent path across the application
-        if not db_path:
-            db_path = "backend/data/backtest_logs.db"
+        db_path = db_path or backtest_log_path()
 
         print(f"🔍 Analysis date: {request.date}")
         print(f"📝 User feedback: {request.feedback}")

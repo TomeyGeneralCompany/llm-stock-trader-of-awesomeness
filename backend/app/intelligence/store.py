@@ -44,6 +44,7 @@ TABLES = {
     "securities": "symbol TEXT PRIMARY KEY, body TEXT, updated TEXT",
     "security_versions": "symbol TEXT, available TEXT, body TEXT, hash TEXT, PRIMARY KEY(symbol,available,hash)",
     "market_observations": "symbol TEXT, interval TEXT, end TEXT, acquired TEXT, session TEXT, body TEXT, hash TEXT, PRIMARY KEY(symbol,interval,end,hash)",
+    "market_observation_sources": "symbol TEXT, interval TEXT, end TEXT, hash TEXT, source TEXT, acquired TEXT, PRIMARY KEY(symbol,interval,end,hash,source)",
     "documents": "id TEXT PRIMARY KEY, url TEXT UNIQUE, publisher TEXT, title TEXT, event_id TEXT",
     "source_payloads": "id TEXT PRIMARY KEY, acquired TEXT, body BLOB, hash TEXT",
     "document_versions": "id TEXT PRIMARY KEY, document TEXT, published TEXT, acquired TEXT, revised TEXT, available TEXT, event_time TEXT, hash TEXT, original_text TEXT, original_payload BLOB, language TEXT, UNIQUE(document,hash)",
@@ -141,7 +142,7 @@ class IntelligenceStore:
                 FROM security_versions WHERE available<=?) WHERE rank=1""", (stamp(now),)).fetchall()
         return {row["symbol"]: json.loads(row["body"]) for row in rows}
 
-    def observe(self, symbol, interval, end, body, acquired, session="regular", *, connection=None):
+    def observe(self, symbol, interval, end, body, acquired, session="regular", *, connection=None, update_coverage=True, source=None):
         end, acquired = stamp(end), stamp(acquired)
         if end > acquired:
             raise ValueError("Cannot archive an unfinished market observation.")
@@ -151,14 +152,35 @@ class IntelligenceStore:
             if not math.isfinite(value) or value < 0 or (key != "volume" and value == 0):
                 raise ValueError("Invalid market observation.")
         encoded = dump(body)
+        digest = sha(encoded)
         with (nullcontext(connection) if connection is not None else self.connect()) as db:
             db.execute("INSERT OR IGNORE INTO market_observations VALUES(?,?,?,?,?,?,?)",
-                       (symbol, interval, end, acquired, session, encoded, sha(encoded)))
-            db.execute("""INSERT INTO coverage VALUES(?,?,?,?,?,?,?)
-                ON CONFLICT(symbol,kind) DO UPDATE SET status='success',
-                earliest=CASE WHEN coverage.earliest IS NULL THEN excluded.earliest ELSE MIN(coverage.earliest,excluded.earliest) END,
-                latest=CASE WHEN coverage.latest IS NULL THEN excluded.latest ELSE MAX(coverage.latest,excluded.latest) END,
-                last_success=excluded.last_success,error=NULL""", (symbol, interval, "success", end, end, acquired, None))
+                       (symbol, interval, end, acquired, session, encoded, digest))
+            if source:
+                db.execute("INSERT OR IGNORE INTO market_observation_sources VALUES(?,?,?,?,?,?)",
+                           (symbol, interval, end, digest, source, acquired))
+            if update_coverage:
+                self.market_coverage(db, symbol, interval, end, end, acquired)
+
+    def market_coverage(self, db, symbol, interval, first, last, acquired):
+        db.execute("""INSERT INTO coverage VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(symbol,kind) DO UPDATE SET status='success',
+            earliest=CASE WHEN coverage.earliest IS NULL THEN excluded.earliest ELSE MIN(coverage.earliest,excluded.earliest) END,
+            latest=CASE WHEN coverage.latest IS NULL THEN excluded.latest ELSE MAX(coverage.latest,excluded.latest) END,
+            last_success=MAX(COALESCE(coverage.last_success,excluded.last_success),excluded.last_success),error=NULL""",
+                   (symbol, interval, "success", first, last, acquired, None))
+
+    def observe_batch(self, symbol, interval, rows, acquired, *, connection, source):
+        acquired = stamp(acquired)
+        ends = []
+        for end, body, session in rows:
+            end = stamp(end)
+            self.observe(symbol, interval, end, body, acquired, session,
+                         connection=connection, update_coverage=False, source=source)
+            ends.append(end)
+        if ends:
+            self.market_coverage(connection, symbol, interval, min(ends), max(ends), acquired)
+
 
     def observations(self, symbol, now, interval="5m", limit=5000):
         with self.connect() as db:
