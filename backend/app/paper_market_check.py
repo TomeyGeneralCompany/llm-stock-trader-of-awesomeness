@@ -87,9 +87,13 @@ def check_market(output, symbol="SPY", *, fetch=yahoo_bars, clock=None, decide=N
             raise RuntimeError("Expected one validated Qwen decision: "+json.dumps(paper.report()["recent_events"]))
         for bar in session[cutoff:]:
             paper.tick([bar], bar.end, analyze=False)
+        paper.tick([], session[-1].end, analyze=False, finish=True)
         report = paper.report()
         if report["scored"] != 1 or not report["sessions"] or not report["sessions"][0]["complete"]:
-            raise RuntimeError("Market replay did not produce a scored forecast and a complete session.")
+            coverage = report["sessions"][-1].get("coverage") if report["sessions"] else None
+            raise RuntimeError(
+                f"Market replay incomplete: {report['scored']} scored forecasts; coverage={json.dumps(coverage)}"
+            )
         result = {**provenance, "status":"complete", "model":settings.OLLAMA_MODEL,
                   "as_of_utc":as_of.isoformat(), "input_bars":cutoff, "decision":decisions[0]["decision"],
                   "fills":report["events"].get("fill",0), "scored":report["scored"], "paper":report}

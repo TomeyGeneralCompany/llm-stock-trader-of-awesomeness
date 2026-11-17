@@ -17,8 +17,9 @@ def session_coverage(db, opened, closed, mode):
     rows = db.execute(
         """SELECT DISTINCT b.end, r.received
            FROM bars b LEFT JOIN bar_receipts r ON b.symbol=r.symbol AND b.end=r.end
-           WHERE b.end>? AND b.end<=? AND json_extract(b.body,'$.volume')>0""",
-        (opened.isoformat(), closed.isoformat()),
+           WHERE b.end>? AND b.end<=?
+             AND (?='replay' OR json_extract(b.body,'$.volume')>0)""",
+        (opened.isoformat(), closed.isoformat(), mode),
     )
     for bar_end, received in rows:
         end = utc(bar_end)
