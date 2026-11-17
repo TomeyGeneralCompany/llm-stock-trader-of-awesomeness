@@ -3,14 +3,46 @@ Backtest Logger
 Records detailed decision processes and analysis data for LLM strategies
 """
 
+from contextlib import closing
 import json
 import sqlite3
+from tempfile import NamedTemporaryFile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import pandas as pd
+from filelock import FileLock
+
+from app.config import env_path, settings
+
+
+def backtest_log_path():
+    """Resolve a shared path and safely copy any local legacy ledger once."""
+    target = Path(settings.BACKTEST_LOG_DB_PATH).expanduser().resolve()
+    legacy = [env_path.parent / directory / "backtest_logs.db"
+              for directory in ("backend/data", "backend/backend/data")]
+    sources = [path for path in legacy if path.is_file() and path.resolve() != target]
+    if target.exists() or not sources:
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(target) + ".migration.lock"):
+        if target.exists():
+            return target
+        if len(sources) > 1:
+            raise RuntimeError("Two legacy backtest ledgers exist. Select one with BACKTEST_LOG_DB_PATH "
+                               "or copy the ledger you want to data/backtest_logs.db.")
+        with NamedTemporaryFile(dir=target.parent, prefix=".backtest-migration-", delete=False) as tmp:
+            temporary = Path(tmp.name)
+        try:
+            with closing(sqlite3.connect(sources[0].resolve().as_uri()+"?mode=ro", uri=True)) as source:
+                with closing(sqlite3.connect(temporary)) as destination:
+                    source.backup(destination)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return target
 
 
 class BacktestLogger:
@@ -26,7 +58,7 @@ class BacktestLogger:
     """
 
     def __init__(
-        self, db_path: str = "backend/data/backtest_logs.db", session_id: str = None
+        self, db_path: str | Path | None = None, session_id: str = None
     ):
         """
         Initialize the logger
@@ -35,7 +67,7 @@ class BacktestLogger:
             db_path: SQLite database file path
             session_id: Backtest session ID, auto-generated if not provided
         """
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path is not None else backtest_log_path()
         # Ensure parent directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.session_id = session_id or str(uuid.uuid4())

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urljoin, urlencode
 import httpx
 from bs4 import BeautifulSoup
 
-from .store import canonical, dump, stamp, UTC
+from .store import canonical, dump, stamp
 
 DEFAULT_SOURCES = [
     ("sec", "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&output=atom", 300, "feed"),
@@ -156,13 +156,16 @@ class SourceAcquisition:
                 db.execute("INSERT OR REPLACE INTO intelligence_state VALUES('schedule_counter',?)", (str(slot+1),))
                 priority_row = db.execute("SELECT value FROM intelligence_state WHERE key='priority_symbols'").fetchone()
                 priority = (json.loads(priority_row[0]) if priority_row else []) + self.config.INTELLIGENCE_BENCHMARKS.split(",")
-                condition, extra = "", ()
+                condition, order, extra = "", "due,id", ()
                 if slot % 3 == 0:
                     condition = " AND kind NOT IN ('market','metadata','history')"
                 elif slot % 3 == 1 and priority:
                     condition = " AND kind='market' AND json_extract(payload,'$.symbol') IN (SELECT value FROM json_each(?))"
-                    extra = (dump(priority),)
-                row = db.execute("SELECT * FROM acquisition_jobs WHERE status='queued' AND due<=?"+condition+" ORDER BY due,id LIMIT 1", (now, *extra)).fetchone()
+                    order = "(SELECT MIN(key) FROM json_each(?) WHERE value=json_extract(payload,'$.symbol')),due,id"
+                    encoded = dump(priority)
+                    extra = (encoded, encoded)
+                row = db.execute("SELECT * FROM acquisition_jobs WHERE status='queued' AND due<=?"
+                                 + condition + " ORDER BY " + order + " LIMIT 1", (now, *extra)).fetchone()
                 if row is None:
                     row = db.execute("SELECT * FROM acquisition_jobs WHERE status='queued' AND due<=? ORDER BY due,id LIMIT 1", (now,)).fetchone()
                 if not row:
@@ -187,9 +190,9 @@ class SourceAcquisition:
                     db.execute("UPDATE acquisition_jobs SET status='queued',due=?,lease=NULL,error=? WHERE id=?",
                                (stamp(datetime.fromisoformat(now)+timedelta(seconds=delay)), error[:500], row["id"]))
                     db.execute("UPDATE sources SET failures=failures+1,error=? WHERE id=?", (error[:500], row["source"]))
-                    if row["kind"] in ("market", "metadata", "history"):
+                    if row["kind"] in ("metadata", "history"):
                         symbol = json.loads(row["payload"])["symbol"]
-                        kinds = ("metadata",) if row["kind"]=="metadata" else ("5m","1d")
+                        kinds = (row["kind"],)
                         for interval in kinds:
                             db.execute("INSERT INTO coverage VALUES(?,?,?,NULL,NULL,NULL,?) ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,error=excluded.error",
                                        (symbol, interval, "provider_unavailable", error[:500]))
@@ -339,48 +342,110 @@ class SourceAcquisition:
             with self.store.connect() as db:
                 db.execute("INSERT OR REPLACE INTO coverage VALUES(?,?,'success',NULL,NULL,?,NULL)", (symbol, "metadata", stamp(now)))
             return
-        successes = 0
-        spans = (("1d", None),) if kind=="history" else (("5m", "5d"), ("1d", "1y"))
-        for interval, period in spans:
-            if kind=="history":
-                ending = datetime.fromisoformat(payload["end"]).date()
-                beginning = ending-timedelta(days=365)
-                frame = ticker.history(start=beginning.isoformat(), end=ending.isoformat(), interval=interval, prepost=True, auto_adjust=False, timeout=20)
-            else:
-                frame = ticker.history(period=period, interval=interval, prepost=True, auto_adjust=False, timeout=20)
-            if self.time_source is not None:
-                now = max(stamp(now), stamp(self.time_source()))
-            if frame.empty:
-                if kind=="history":
-                    with self.store.connect() as db:
-                        db.execute("INSERT INTO coverage VALUES(?,?,'source_exhausted',NULL,NULL,?,?) ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,last_success=excluded.last_success,error=excluded.error",
-                                   (symbol, "history", stamp(now), "Provider returned no older historical observations."))
+        errors = []
+        for interval in (("1d",) if kind == "history" else ("5m", "1d")):
+            now = max(stamp(now), stamp(self.time_source())) if self.time_source else stamp(now)
+            try:
+                self.market_interval(ticker, symbol, interval, now, payload if kind == "history" else None)
+            except Exception as exc:
+                coverage = "history" if kind == "history" else interval
+                with self.store.connect() as db:
+                    db.execute("""INSERT INTO coverage VALUES(?,?,'provider_unavailable',NULL,NULL,NULL,?)
+                        ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,error=excluded.error""",
+                               (symbol, coverage, str(exc)[:500]))
+                errors.append(f"{coverage}: {str(exc)[:300]}")
+        if errors:
+            raise ValueError("; ".join(errors))
+
+    def market_interval(self, ticker, symbol, interval, now, history):
+        from app.paper_market import EASTERN, market_close
+
+        moment = datetime.fromisoformat(now)
+        local = moment.astimezone(EASTERN)
+        cursor_key = f"yahoo_incremental:{symbol}:{interval}"
+        options = {}
+        with self.store.connect() as db:
+            if history:
+                ending = datetime.fromisoformat(history["end"]).date()
+                options = {"start": (ending - timedelta(days=365)).isoformat(), "end": ending.isoformat()}
+            elif interval == "1d":
+                day = local.date()
+                while (hours := market_close(day)) is None or (
+                        day == local.date() and (local.hour, local.minute) < hours):
+                    day -= timedelta(days=1)
+                target = datetime.combine(day, local.replace(hour=hours[0], minute=hours[1],
+                                          second=0, microsecond=0).timetz())
+                latest = db.execute("""SELECT MAX(end) FROM market_observations
+                    WHERE symbol=? AND interval='1d' AND end<=? AND acquired<=?""",
+                                    (symbol, now, now)).fetchone()[0]
+                if latest and latest >= stamp(target):
                     return
-                with self.store.connect() as db:
-                    db.execute("INSERT INTO coverage VALUES(?,?,?,?,?,?,?) ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,error=excluded.error", (symbol, interval, "provider_unavailable", None, None, None, "No observations returned."))
-                if kind=="history":
-                    return  # Recorded source exhaustion, not manufactured earlier observations.
-                continue
-            if interval=="1d":
-                oldest = stamp(frame.index[0].to_pydatetime())
-                with self.store.connect() as db:
-                    existing = db.execute("SELECT 1 FROM acquisition_jobs WHERE kind='history' AND json_extract(payload,'$.symbol')=? LIMIT 1", (symbol,)).fetchone()
-                if kind=="history" or not existing:
-                    self.store.enqueue("yahoo", "history", {"symbol": symbol, "end": oldest}, now)
-            for date, row in frame.iterrows():
-                from app.paper_market import EASTERN, market_close
-                if interval=="5m":
-                    end = date.to_pydatetime()+timedelta(minutes=5)
-                else:
-                    local_date = date.to_pydatetime().astimezone(EASTERN)
-                    close_time = market_close(local_date.date())
-                    end = local_date.replace(hour=close_time[0],minute=close_time[1],second=0,microsecond=0) if close_time else date.to_pydatetime()+timedelta(days=1)
-                if stamp(end) > stamp(now):
-                    continue
-                from app.paper_market import EASTERN, market_close
-                local = end.astimezone(EASTERN)
-                session = "daily" if interval == "1d" else "regular" if market_close(local.date()) and (9,30) < (local.hour,local.minute) <= market_close(local.date()) else "extended"
-                self.store.observe(symbol, interval, end, {key.lower(): float(row[key]) for key in ("Open", "High", "Low", "Close", "Volume")}, now, session)
-                successes += 1
-        if not successes:
+                options = ({"start": (datetime.fromisoformat(latest).date() - timedelta(days=2)).isoformat()}
+                           if latest else {"period": "1y"})
+            else:
+                row = db.execute("SELECT value FROM intelligence_state WHERE key=?", (cursor_key,)).fetchone()
+                previous = datetime.fromisoformat(row[0]) if row and row[0] <= now else None
+                opened = local.replace(hour=9, minute=30, second=0, microsecond=0)
+                end = local.replace(minute=local.minute // 5 * 5, second=0, microsecond=0)
+                hours = market_close(local.date())
+                if previous and hours and opened <= previous and (local.hour, local.minute) <= hours:
+                    count = int((end - previous).total_seconds() // 300)
+                    if count <= 0:
+                        return
+                    observed = db.execute("""SELECT COUNT(DISTINCT o.end)
+                        FROM market_observations o JOIN market_observation_sources s
+                        USING(symbol,interval,end,hash)
+                        WHERE o.symbol=? AND o.interval='5m' AND o.session='regular'
+                        AND s.source IN ('paper_forward_yahoo','yahoo_extended')
+                        AND o.end>? AND o.end<=? AND s.acquired<=?""",
+                                          (symbol, stamp(previous), stamp(end), now)).fetchone()[0]
+                    if observed == count:
+                        db.execute("INSERT OR REPLACE INTO intelligence_state VALUES(?,?)",
+                                   (cursor_key, stamp(end)))
+                        return
+                options = ({"start": previous - timedelta(minutes=5)}
+                           if previous and moment - previous <= timedelta(days=5) else {"period": "5d"})
+
+        frame = ticker.history(**options, interval=interval, prepost=True, auto_adjust=False, timeout=20)
+        if self.time_source:
+            now = max(now, stamp(self.time_source()))
+        if frame.empty and history:
+            with self.store.connect() as db:
+                db.execute("""INSERT INTO coverage VALUES(?,?,'source_exhausted',NULL,NULL,?,?)
+                    ON CONFLICT(symbol,kind) DO UPDATE SET status=excluded.status,last_success=excluded.last_success,error=excluded.error""",
+                           (symbol, "history", now, "Provider returned no older historical observations."))
+            return
+
+        rows = []
+        for date, row in frame.iterrows():
+            start = date.to_pydatetime()
+            local_date = start.astimezone(EASTERN)
+            close = market_close(local_date.date())
+            if interval == "1d":
+                end = (local_date.replace(hour=close[0], minute=close[1], second=0, microsecond=0)
+                       if close else start + timedelta(days=1))
+                session = "daily"
+            else:
+                end = start + timedelta(minutes=5)
+                eastern_end = end.astimezone(EASTERN)
+                session = "regular" if close and (9, 30) < (eastern_end.hour, eastern_end.minute) <= close else "extended"
+            if stamp(end) <= now:
+                body = {key.lower(): float(row[key]) for key in ("Open", "High", "Low", "Close", "Volume")}
+                rows.append((end, body, session))
+        if not rows:
             raise ValueError("Provider returned no completed observations.")
+
+        with self.store.connect() as db:
+            self.store.observe_batch(symbol, interval, rows, now, connection=db, source="yahoo_extended" if interval == "5m" else "yahoo_daily")
+            if interval == "5m":
+                latest = max(stamp(row[0]) for row in rows)
+                db.execute("""INSERT INTO intelligence_state VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET value=MAX(intelligence_state.value,excluded.value)""",
+                           (cursor_key, latest))
+            else:
+                oldest = stamp(frame.index.min().to_pydatetime())
+                existing = db.execute("""SELECT 1 FROM acquisition_jobs
+                    WHERE kind='history' AND json_extract(payload,'$.symbol')=? LIMIT 1""", (symbol,)).fetchone()
+                if history or not existing:
+                    db.execute("""INSERT OR IGNORE INTO acquisition_jobs(source,kind,payload,status,due)
+                        VALUES('yahoo','history',?,'queued',?)""", (dump({"symbol": symbol, "end": oldest}), now))

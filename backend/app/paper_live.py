@@ -50,11 +50,12 @@ class QuoteJournal:
 
 def run_live(engine, args, intelligence):
     universe, refreshed = [], None
-    latest, retries = {}, {}
+    portfolio_cache, discovery_cache = ({}, {}), ({}, {})
     runtime_day = None
     journal = QuoteJournal(args.quotes)
 
-    def ingest(symbols, now, cursor=None, quotes=()):
+    def fetch_bars(symbols, now, cache):
+        latest, retries = cache
         bars = []
         unknown = [symbol for symbol in symbols if symbol not in latest]
         if unknown:
@@ -82,17 +83,29 @@ def run_live(engine, args, intelligence):
             for bar in pulled:
                 latest[bar.symbol] = max(latest[bar.symbol] or bar.end,bar.end)
                 retries.pop(bar.symbol,None)
-        engine.tick(bars, clock(), cursor=cursor, analyze=False, quotes=quotes)
+        return bars
 
-    def analyze(watch, window):
+    def audit():
+        ledger = engine.ledger_identity
+        after = intelligence.paper_audit_cursor(ledger)
+        through, events = engine.audit_events(after)
+        if events:
+            intelligence.paper_audit({"recent_events": events}, clock(), ledger=ledger, through=through)
+
+    def analyze(watch, window, submitted_at):
         # Research starts only when no current paper decision is eligible.
-        completed = engine.analyze(clock(), time_source=clock, limit=1) if window else 0
+        completed = engine.analyze(clock(), time_source=clock, limit=1, submitted_at=submitted_at) if window else 0
         if intelligence is not None:
-            intelligence.paper_audit(engine.report(), clock())
+            audit()
             intelligence.cycle(priority=watch, research=not completed)
 
     future = None
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="paper-analysis") as worker:
+    ready_since = None
+    scan_job = None
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="paper-analysis") as worker,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="paper-discovery") as discovery,
+    ):
         while True:
             try:
                 now = clock()
@@ -118,29 +131,47 @@ def run_live(engine, args, intelligence):
                         state = engine.state(db)
                     portfolio = set(state["holdings"]) | set(state["pending"])
                     # Process existing positions and orders before the broader scan.
-                    ingest(sorted(portfolio), now, quotes=journal.poll())
+                    bars = fetch_bars(sorted(portfolio), now, portfolio_cache)
+                    state = engine.tick(bars, clock(), analyze=False, quotes=journal.poll())
                     if not universe or refreshed != local.date():
                         universe = sorted(set(args.symbols.upper().split(","))) if args.symbols else listed_symbols()
                         refreshed = local.date()
                     if not universe:
                         raise ValueError("Empty configured market universe")
                     catalysts = intelligence.priority_symbols(now) if intelligence is not None else []
-                    watch = sorted(set(watch) | (set(catalysts) & set(universe)))
-                    cursor %= len(universe)
-                    scan = (universe+universe)[cursor:cursor+min(args.batch,len(universe))]
-                    ingest(sorted((set(scan)|set(watch))-portfolio), clock(),
-                           cursor=(cursor+len(scan))%len(universe), quotes=journal.poll())
+                    watch = sorted(portfolio) + sorted((set(watch) | (set(catalysts) & set(universe))) - portfolio)
+                    if scan_job is not None and scan_job[0].done():
+                        finished_scan, next_cursor = scan_job
+                        scan_job = None
+                        state = engine.tick(finished_scan.result(), clock(), cursor=next_cursor,
+                                            analyze=False, quotes=journal.poll())
+                        cursor = state["cursor"]
+                    if scan_job is None:
+                        cursor %= len(universe)
+                        scan = (universe+universe)[cursor:cursor+min(args.batch,len(universe))]
+                        symbols = sorted((set(scan) | set(watch)) - portfolio)
+                        next_cursor = (cursor+len(scan)) % len(universe)
+                        if args.command == "once":
+                            bars = fetch_bars(symbols, clock(), discovery_cache)
+                            state = engine.tick(bars, clock(), cursor=next_cursor, analyze=False, quotes=journal.poll())
+                        else:
+                            scan_job = (discovery.submit(fetch_bars, symbols, clock(), discovery_cache), next_cursor)
                 else:
                     engine.tick([], now, analyze=False)
                 if args.command == "once":
                     engine.analyze(clock(), time_source=clock)
                     if intelligence is not None:
+                        audit()
                         intelligence.cycle(priority=watch)
                     print(json.dumps(engine.report()), flush=True)
                     return
-                if future is None:
-                    future = worker.submit(analyze, watch, window)
-                print(json.dumps(engine.report()), flush=True)
+                if not window or state["day"] == local.date().isoformat():
+                    if ready_since is None:
+                        ready_since = time.monotonic()
+                    if future is None:
+                        future = worker.submit(analyze, watch, window, ready_since)
+                        ready_since = None
+                print(json.dumps(engine.heartbeat()), flush=True)
             except KeyboardInterrupt:
                 return
             except Exception as exc:

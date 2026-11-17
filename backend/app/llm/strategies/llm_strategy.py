@@ -142,12 +142,10 @@ class LLMSmartStrategy(TradingStrategy):
         # Backtest logger initialization
         self.backtest_logger = None
         if config.parameters.get("enable_logging", True):
-            log_path = config.parameters.get(
-                "log_path", "backend/data/backtest_logs.db"
-            )
+            log_path = config.parameters.get("log_path")
             session_id = config.parameters.get("session_id", None)
             self.backtest_logger = BacktestLogger(log_path, session_id)
-            logger.info(f"✅ Backtest logger enabled: {log_path}")
+            logger.info("Backtest logger enabled: %s", self.backtest_logger.db_path)
 
     def _load_strategy_prompt(self) -> None:
         """Load strategy decision principles"""

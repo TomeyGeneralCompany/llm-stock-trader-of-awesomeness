@@ -11,8 +11,6 @@ dependencies = [
     "python-dateutil>=2.9.0.post0",
     "pytz>=2025.2",
     "requests>=2.32.4",
-    # Backtest charts
-    "plotly>=6.2.0",
     # Backend (FastAPI)
     "fastapi>=0.104.1",
     "uvicorn[standard]>=0.24.0",

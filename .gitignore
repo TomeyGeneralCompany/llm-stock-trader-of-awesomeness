@@ -216,3 +216,7 @@ __marimo__/
 /data/market-intelligence.sqlite3*
 *.intelligence.sqlite3*
 /intelligence-probe/
+
+/data/backtest_logs.db*
+/backend/data/backtest_logs.db*
+/backend/backend/data/backtest_logs.db*

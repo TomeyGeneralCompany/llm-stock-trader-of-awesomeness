@@ -461,3 +461,61 @@ def test_rank_breakdown_uses_known_reaction_liquidity_and_session_time(tmp_path)
     assert ranking["minutes_remaining"]==2
     assert ranking["components"]["historical"]>0 and ranking["components"]["liquidity"]>0
     assert total==pytest.approx(sum(ranking["components"].values()))
+
+
+def test_market_refresh_reuses_contiguous_forward_bars_and_fetches_only_gap(tmp_path):
+    import pandas as pd
+
+    intel = IntelligenceController(tmp_path / "intel.db", config(), client=ResearchModel())
+    opening_bars = day_bars(n=2)
+    first, second = opening_bars
+    missing = next_bar(second)
+    calls = []
+
+    class Ticker:
+        def history(self, **kwargs):
+            calls.append(kwargs)
+            if kwargs["interval"] == "1d":
+                index = pd.DatetimeIndex(["2025-02-28 00:00"], tz="America/New_York")
+                values = first
+            else:
+                values = first if sum(call["interval"] == "5m" for call in calls) == 1 else missing
+                index = pd.DatetimeIndex([values.start])
+            return pd.DataFrame({"Open": [values.open], "High": [values.high], "Low": [values.low],
+                                 "Close": [values.close], "Volume": [values.volume]}, index=index)
+
+    import yfinance
+    from unittest.mock import patch
+
+    with patch.object(yfinance, "Ticker", return_value=Ticker()):
+        intel.acquisition.market("AAA", "market", first.end)
+        intel.observe([second], second.end, review=False, source="paper_forward_yahoo")
+        intel.acquisition.market("AAA", "market", second.end)
+        assert [call["interval"] for call in calls] == ["5m", "1d"]
+        intel.acquisition.market("AAA", "market", missing.end)
+    assert [call["interval"] for call in calls] == ["5m", "1d", "5m"]
+    assert calls[-1]["start"] == first.end
+    assert [row["end"] for row in intel.store.observations("AAA", missing.end)] == [
+        stamp(first.end), stamp(second.end), stamp(missing.end)]
+    with intel.store.connect() as db:
+        sources = {row[0] for row in db.execute("SELECT DISTINCT source FROM market_observation_sources")}
+    assert sources == {"yahoo_extended", "yahoo_daily", "paper_forward_yahoo"}
+
+
+def test_incremental_paper_audit_resumes_without_repeating_events(tmp_path):
+    intel = IntelligenceController(tmp_path / "intel.db", config(), client=ResearchModel())
+    path = tmp_path / "paper.db"
+    engine = PaperTrader(path, lambda ctx, _: response(ctx))
+    bars = day_bars()
+    engine.tick(bars, bars[-1].end)
+    token = engine.ledger_identity
+    through, events = engine.audit_events(0, limit=1)
+    intel.paper_audit({"recent_events": events}, bars[-1].end, ledger=token, through=through)
+
+    restored = PaperTrader(path, lambda ctx, _: response(ctx))
+    assert restored.ledger_identity == token
+    assert intel.paper_audit_cursor(token) == through
+    last, remaining = restored.audit_events(through)
+    assert remaining and not any(item in events for item in remaining)
+    intel.paper_audit({"recent_events": remaining}, bars[-1].end, ledger=token, through=last)
+    assert restored.audit_events(intel.paper_audit_cursor(token)) == (last, [])

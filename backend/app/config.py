@@ -49,19 +49,8 @@ def local_ollama_url(value: str) -> str:
 class Settings(BaseSettings):
     """Application settings."""
 
-    # API settings
-    API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "LLM Stock Backtesting Dashboard"
-
-    # CORS settings
-    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000"]
-
-    # External API settings
-    YFINANCE_TIMEOUT: int = 30
-
     # Backtesting settings
-    DEFAULT_INITIAL_CAPITAL: float = 10000.0
-    DEFAULT_COMMISSION: float = 0.001
+    BACKTEST_LOG_DB_PATH: str = str(env_path.parent / "data" / "backtest_logs.db")
     PIPELINE_DB_PATH: str = str(env_path.parent / "data" / "stage-gates.sqlite3")
     PAPER_DB_PATH: str = str(env_path.parent / "data" / "paper-trader.sqlite3")
     PIPELINE_LOCK_PATH: str = str(env_path.parent / "data" / "stage-work.lock")
@@ -95,10 +84,6 @@ class Settings(BaseSettings):
     INTELLIGENCE_FRED_SERIES: str = "DFF"
     SEC_USER_AGENT: str = ""
     FRED_API_KEY: str = ""
-
-    # Additional .env settings
-    DEBUG: bool = False
-    LOG_LEVEL: str = "INFO"
 
     model_config = SettingsConfigDict(
         env_file=env_path,

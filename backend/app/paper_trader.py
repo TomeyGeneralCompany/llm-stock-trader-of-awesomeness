@@ -1,23 +1,26 @@
 """Persistent, paper-only autonomous trader. Never submits broker orders."""
 import argparse
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 import json
+import logging
 import math
 from pathlib import Path
 import sqlite3
 import time
 import threading
+from uuid import uuid4
 
 from filelock import FileLock
 import pandas as pd
 
 from app.llm.client import get_llm_client
-from app.llm.decisions import EXPLANATION_INSTRUCTIONS, DecisionError, execution_action, validate_decision
+from app.llm.decisions import EXPLANATION_FIELDS, DecisionError, execution_action, validate_decision
 from app.llm.memory import prompt_budget
 from app.paper_coverage import ACTIONABLE_AGE, session_coverage
-from app.paper_market import Bar, Quote, EASTERN, UTC, BAR_MINUTES, listed_symbols, market_close, read_replay, regular, utc, yahoo_bars
+from app.paper_market import Bar, EASTERN, UTC, BAR_MINUTES, market_close, read_replay, regular, utc
 from app.stage_resources import stage_resources
 
 OBJECTIVE = 100.0
@@ -73,7 +76,7 @@ class LocalDecision:
     def __init__(self):
         self.client = get_llm_client(max_tokens=1800, response_format="json")
 
-    def __call__(self, context, lessons):
+    def __call__(self, context, lessons, *, timing=None):
         from app.llm.paper_schema import paper_decision_schema
         self.client.config.response_schema = paper_decision_schema(context)
         instructions = (
@@ -86,13 +89,14 @@ class LocalDecision:
             "op >= or <=, threshold number, required_position flat/long/any). For HOLD supply at least one watch condition. "
             "Watch conditions prompt fresh inference, never execute orders. "
             "Evidence keys must refer to this controller state. "
-            + EXPLANATION_INSTRUCTIONS + "\nController state:\n" + dump(context)
+            + EXPLANATION_FIELDS + "\n- execution: evidence (same key format), rationale. "
+            "BUY/SELL only on observed evidence. Use HOLD and conditional_actions for unmet triggers."
+            "\nController state:\n" + dump(context)
         )
         budget = prompt_budget(self.client.config.num_ctx, self.client.config.max_tokens)
         # Complete evidence stays archived; optional context yields to account facts.
         if len(instructions.encode()) > budget-450 and context.get("intelligence"):
-            import copy
-            compact = copy.deepcopy(context)
+            compact = deepcopy(context)
             for key in ("relationships", "lessons", "catalysts"):
                 while compact["intelligence"].get(key) and len(instructions.encode()) > budget-450:
                     compact["intelligence"][key].pop()
@@ -104,18 +108,33 @@ class LocalDecision:
                 prompt += line
         if len(prompt.encode()) > budget - 450:
             raise ValueError("Paper decision context exceeds its budget")
+        timing = timing if timing is not None else {}
+        timing.update(model_calls=0, first_pass_success=False, retry_seconds=0.0)
         for attempt in range(2):
+            started = time.monotonic()
+            timing["model_calls"] += 1
             try:
-                raw = self.client.invoke(prompt).content
-                decision = json.loads(raw)
+                decision = json.loads(self.client.invoke(prompt).content)
+                action = decision["action"]
+                execution = decision["explanation"]["execution"]
+                if not isinstance(execution, dict):
+                    raise DecisionError("Explanation requires execution evidence and rationale.")
+                mode = "wait" if action == "HOLD" else "now"
+                # A legacy response may still send mode. Never promote an
+                # explicitly deferred order to an immediate one.
+                if action in ("BUY", "SELL") and execution.get("mode", mode) != mode:
+                    raise DecisionError("Use HOLD for a deferred order.")
+                execution["mode"] = mode
                 check_decision(decision, context)
+                timing["first_pass_success"] = attempt == 0
                 return decision
             except (DecisionError, ValueError, KeyError, TypeError) as exc:
-                import logging
-                logging.getLogger(__name__).warning("Paper decision correction: %s; response=%s", str(exc), locals().get("raw", "")[:4000])
+                logging.getLogger(__name__).warning("Paper decision correction: %s", exc)
                 if attempt:
                     raise
                 prompt += "\nCorrection: " + str(exc)[:260] + ". Return complete JSON."
+            finally:
+                timing["retry_seconds" if attempt else "first_pass_seconds"] = time.monotonic() - started
         raise RuntimeError("Unreachable inference state")
 
 
@@ -165,6 +184,7 @@ class PaperTrader:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = FileLock(self.path + ".lock", timeout=10)
         self.analysis_lock = threading.Lock()
+        self.feature_cache = {}
         self.use_memory = use_memory
         self.runtime = runtime
         self.decide = decide or LocalDecision()
@@ -184,6 +204,7 @@ class PaperTrader:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, body TEXT);
+                CREATE TABLE IF NOT EXISTS ledger_identity (id INTEGER PRIMARY KEY, token TEXT);
                 CREATE TABLE IF NOT EXISTS bars (symbol TEXT, end TEXT, body TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS service_heartbeat (id INTEGER PRIMARY KEY, stamp TEXT);
                 CREATE TABLE IF NOT EXISTS session_heartbeats (stamp TEXT PRIMARY KEY);
@@ -202,6 +223,8 @@ class PaperTrader:
                 raise ValueError("Database already belongs to a different paper configuration")
             db.execute("INSERT OR IGNORE INTO config VALUES(1,?)", (dump(config),))
             db.execute("INSERT OR IGNORE INTO state VALUES(1,?)", (dump(self.new_state()),))
+            db.execute("INSERT OR IGNORE INTO ledger_identity VALUES(1,?)", (uuid4().hex,))
+            self.ledger_identity = db.execute("SELECT token FROM ledger_identity WHERE id=1").fetchone()[0]
 
     def connect(self):
         from contextlib import closing
@@ -410,25 +433,39 @@ class PaperTrader:
                     "recent_losing_trades": sum(x["realized_pnl"] < 0 for x in closed)}
         return [summary, *values] if groups or closed else []
 
-    def latest_candidates(self, db, state, now):
-        results = []
+    def candidate_windows(self, db, now):
         recent = now - ACTIONABLE_AGE
         rows = db.execute("SELECT symbol,MAX(end) FROM bars WHERE end<=? AND end>=? GROUP BY symbol",
                           (now.isoformat(), recent.isoformat())).fetchall()
+        windows = {
+            symbol: tuple(row[0] for row in db.execute(
+                "SELECT body FROM bars WHERE symbol=? AND end<=? ORDER BY end DESC LIMIT 100",
+                (symbol, end)))
+            for symbol, end in rows
+        }
+        return rows, windows
+
+    def rank_windows(self, rows, windows, state, now):
+        results = []
+        current_cache = {}
+        closing = self.closing(state["day"])
         for symbol, end in rows:
-            bars = self.history(db, symbol, now)
-            if not bars or bars[-1].day != state["day"]:
+            window = windows[symbol]
+            cached = self.feature_cache.get(symbol)
+            if cached is not None and cached[0] == window:
+                _, bars, info = cached
+            else:
+                bars = [Bar.from_record(json.loads(body)) for body in reversed(window)]
+                info = features(bars) if bars[-1].day == state["day"] and bars[-1].volume > 0 else None
+            current_cache[symbol] = (window, bars, info)
+            if info is None or bars[-1].day != state["day"]:
                 continue
-            info = features(bars)
-            if info is None or bars[-1].volume <= 0:
-                continue
-            info["symbol"] = symbol
-            info["asof"] = end
+            candidate = {**deepcopy(info), "symbol": symbol, "asof": end}
             if self.intelligence is not None:
-                info["score"], info["intelligence"] = self.intelligence.rank(symbol, info["score"], now, bars=bars, closing=self.closing(state["day"]))
-                if not self.use_memory:
-                    info["intelligence"]["lessons"] = []
-            results.append(info)
+                candidate["score"], candidate["intelligence"] = self.intelligence.rank(
+                    symbol, candidate["score"], now, bars=bars, closing=closing, include_details=False)
+            results.append(candidate)
+        self.feature_cache = current_cache
         return sorted(results, key=lambda x: (-x["score"], x["symbol"]))
 
     def tick(self, bars, now, *, time_source=None, cursor=None, finish=False, analyze=True, quotes=()):
@@ -511,65 +548,85 @@ class PaperTrader:
                 self.save(db, state)
 
         if self.intelligence is not None:
-            self.intelligence.observe(bars, now, review=analyze)
+            self.intelligence.observe(bars, now, review=analyze,
+                                      source="paper_forward_yahoo" if self.mode == "forward" else "paper_replay")
         if analyze:
             self.analyze(now, time_source=time_source)
         with self.connect() as db:
             return self.state(db)
 
-    def analyze(self, now, *, time_source=None, limit=None):
+    def analyze(self, now, *, time_source=None, limit=None, submitted_at=None):
         """Build requests from the current ledger; infer outside its write lock."""
         if not self.analysis_lock.acquire(blocking=False):
             return 0
         try:
-            return self._analyze(now, time_source, limit)
+            return self._analyze(now, time_source, limit, submitted_at)
         finally:
             self.analysis_lock.release()
 
-    def _analyze(self, now, time_source, limit):
+    def _analyze(self, now, time_source, limit, submitted_at):
         now = utc(now)
         day = now.astimezone(EASTERN).date().isoformat()
         completed = 0
-        with self.lock, self.connect() as db:
+        worker_started = time.monotonic()
+        with self.connect() as db:
+            db.execute("BEGIN")
             state = self.state(db)
             if state["day"] != day or state["closed"] or state["goal_reached_at"]:
                 return 0
             closing = self.closing(day)
             if now >= closing:
                 return 0
-            ranked = self.latest_candidates(db, state, now)
-            ranking_report = [{"symbol": x["symbol"], "bar": x["asof"], "score": x["score"],
-                               **x.get("intelligence", {}).get("ranking", {}),
-                               "catalysts": x.get("intelligence", {}).get("catalysts", [])} for x in ranked[:20]]
-            db.execute("INSERT OR REPLACE INTO ranked_snapshot VALUES (1,?,?)", (now.isoformat(), dump(ranking_report)))
-            # Prioritize open positions and unresolved conditional plans; reserve
-            # capacity for discovery and order candidates by market score.
+            rows, windows = self.candidate_windows(db, now)
+            latest = dict(rows)
             prior = {}
-            for x in ranked:
-                previous = db.execute("SELECT body FROM decisions WHERE day=? AND symbol=? ORDER BY id DESC LIMIT 1",
-                                      (day, x["symbol"])).fetchone()
-                if previous:
-                    prior[x["symbol"]] = json.loads(previous[0])
-                x["triggered_watches"] = triggered_watches(prior.get(x["symbol"], {}), x, x["symbol"] in state["holdings"])
-            eligible = [x for x in ranked if x["symbol"] not in state["pending"] and not db.execute(
-                "SELECT 1 FROM decisions WHERE day=? AND symbol=? AND bar=?",
-                (day, x["symbol"], x["asof"])).fetchone()]
-            eligible.sort(key=lambda x: (x["symbol"] not in state["holdings"], not x["triggered_watches"], -x["score"]))
-            selected = eligible[:limit or self.max_candidates]
-            discoveries = [x for x in eligible if x["symbol"] not in prior and x not in selected]
-            if discoveries and len(selected) > 1 and all(x["symbol"] in prior for x in selected):
-                selected[-1] = discoveries[0]
-            alternatives = [{"symbol": x["symbol"], "score": round(x["score"], 6),
-                             "return_6_bars": round(x["technical_facts"]["return_6_bars"], 5),
-                             "prior_forecast": prior.get(x["symbol"], {}).get("expected_return")}
-                            for x in ranked[:5]]
+            for symbol, bar, body in db.execute("""
+                SELECT symbol,bar,body FROM decisions WHERE id IN (
+                    SELECT MAX(id) FROM decisions WHERE day=? GROUP BY symbol)
+                """, (day,)):
+                if symbol in latest:
+                    prior[symbol] = json.loads(body)
+            decided = {symbol for symbol, bar in db.execute("""
+                SELECT d.symbol,d.bar FROM decisions d
+                JOIN json_each(?) latest ON latest.key=d.symbol AND latest.value=d.bar
+                WHERE d.day=?
+                """, (dump(latest), day))}
+        ranked = self.rank_windows(rows, windows, state, now)
+        ranking_report = [{"symbol": x["symbol"], "bar": x["asof"], "score": x["score"],
+                           **x.get("intelligence", {}).get("ranking", {}),
+                           "catalysts": x.get("intelligence", {}).get("catalysts", [])} for x in ranked[:20]]
+        with self.lock, self.connect() as db:
+            db.execute("""INSERT INTO ranked_snapshot VALUES (1,?,?)
+                ON CONFLICT(id) DO UPDATE SET stamp=excluded.stamp,body=excluded.body
+                WHERE ranked_snapshot.stamp<=excluded.stamp""", (now.isoformat(), dump(ranking_report)))
+        eligible = [x for x in ranked if x["symbol"] not in state["pending"] and x["symbol"] not in decided]
+        for x in eligible:
+            x["triggered_watches"] = triggered_watches(prior.get(x["symbol"], {}), x, x["symbol"] in state["holdings"])
+        eligible.sort(key=lambda x: (x["symbol"] not in state["holdings"], not x["triggered_watches"], -x["score"]))
+        selected = eligible[:limit or self.max_candidates]
+        if len(selected) > 1 and all(x["symbol"] in prior for x in selected):
+            discovery = next((x for x in eligible if x["symbol"] not in prior), None)
+            if discovery is not None:
+                selected[-1] = discovery
+        alternatives = [{"symbol": x["symbol"], "score": round(x["score"], 6),
+                         "return_6_bars": round(x["technical_facts"]["return_6_bars"], 5),
+                         "prior_forecast": prior.get(x["symbol"], {}).get("expected_return")}
+                        for x in ranked[:5]]
+        preparation_seconds = time.monotonic() - worker_started
         for candidate in selected:
+            context_started = time.monotonic()
+            if self.intelligence is not None:
+                detail = self.intelligence.context(candidate["symbol"], now, include_lessons=self.use_memory)
+                candidate["intelligence"] = {**detail, "ranking": candidate["intelligence"]["ranking"]}
             with self.lock, self.connect() as db:
                 state = self.state(db)
                 symbol = candidate["symbol"]
                 if state["day"] != day or state["closed"] or state["goal_reached_at"]:
                     break
-                if symbol in state["pending"]:
+                if (symbol in state["pending"]
+                        or state["marks"].get(symbol, {}).get("end", "") > candidate["asof"]
+                        or db.execute("SELECT 1 FROM decisions WHERE day=? AND symbol=? AND bar=?",
+                                      (day, symbol, candidate["asof"])).fetchone()):
                     continue
                 reserved = sum(x.get("reserved", 0.) for x in state["pending"].values())
                 available = max(0., state["cash"]-reserved)
@@ -603,6 +660,11 @@ class PaperTrader:
                 "symbol": symbol,
                 "bar": candidate["asof"],
                 "started": started.isoformat(),
+                "candidate_preparation_seconds": preparation_seconds + timer - context_started,
+                "worker_wait_seconds": worker_started - submitted_at if submitted_at is not None else 0.0,
+                "market_to_dispatch_seconds": max(
+                    0.0, (started - utc(context["market_received_at"])).total_seconds()
+                ) if context["market_received_at"] else None,
                 "market_received_at": context["market_received_at"],
                 "feed_lag_seconds": (utc(context["market_received_at"]) - utc(candidate["asof"])).total_seconds()
                     if context["market_received_at"] else None,
@@ -613,7 +675,24 @@ class PaperTrader:
                     inference_started = time.monotonic()
                     timing["inference_started_at"] = (utc(time_source()) if time_source else now).isoformat()
                     timing["queue_seconds"] = inference_started - timer
-                    decision = check_decision(self.decide(context, lessons), context)
+                    timing["resource_wait_seconds"] = timing["queue_seconds"]
+                    if submitted_at is not None:
+                        dispatch = utc(timing["inference_started_at"])
+                        with self.lock, self.connect() as db:
+                            state = self.state(db)
+                            if (dispatch >= closing or dispatch - utc(candidate["asof"]) > ACTIONABLE_AGE
+                                    or state["day"] != day or state["closed"] or state["goal_reached_at"]
+                                    or symbol in state["pending"]
+                                    or state["holdings"].get(symbol, {}).get("shares", 0) != context["shares"]
+                                    or state["marks"].get(symbol, {}).get("end", "") > candidate["asof"]
+                                    or db.execute("SELECT 1 FROM decisions WHERE day=? AND symbol=? AND bar=?",
+                                                  (day, symbol, candidate["asof"])).fetchone()):
+                                self.event(db, {"day": day}, dispatch, "analysis_skipped",
+                                           {**timing, "reason": "snapshot or position changed before inference"})
+                                continue
+                    result = (self.decide(context, lessons, timing=timing)
+                              if isinstance(self.decide, LocalDecision) else self.decide(context, lessons))
+                    decision = check_decision(result, context)
             except Exception as exc:
                 failed = utc(time_source()) if time_source else now
                 if inference_started is not None:
@@ -690,6 +769,22 @@ class PaperTrader:
                         recent.append(symbol)
             return sorted(set(state["holdings"]) | set(state["pending"]) | set(recent)), state["cursor"]
 
+    def heartbeat(self):
+        with self.connect() as db:
+            state = self.state(db)
+            checked = db.execute("SELECT stamp FROM service_heartbeat WHERE id=1").fetchone()
+        return {"kind": "paper_heartbeat", "checked_at": checked[0] if checked else None,
+                "session": state["day"], "closed": state["closed"], "holdings": len(state["holdings"]),
+                "pending": len(state["pending"]), "equity": self.equity(state)}
+
+    def audit_events(self, after, limit=128):
+        with self.connect() as db:
+            rows = db.execute("SELECT id,stamp,kind,body FROM events WHERE id>? ORDER BY id LIMIT ?",
+                              (after, limit)).fetchall()
+        events = [{"time": stamp, "kind": kind, "detail": json.loads(body)}
+                  for _, stamp, kind, body in rows]
+        return (rows[-1][0] if rows else after), events
+
     def report(self):
         return read_report(self.path)
 
@@ -708,13 +803,17 @@ def read_report(path):
         heartbeat = db.execute("SELECT stamp FROM service_heartbeat WHERE id=1").fetchone() if "service_heartbeat" in tables else None
         ranking = db.execute("SELECT stamp,body FROM ranked_snapshot WHERE id=1").fetchone() if "ranked_snapshot" in tables else None
         timing_rows = db.execute("""SELECT body FROM events
-            WHERE day=? AND kind IN ('analysis_completed','analysis_error') ORDER BY id DESC""",
+            WHERE day=? AND kind IN ('analysis_completed','analysis_error','analysis_skipped') ORDER BY id DESC""",
             (state["day"],)).fetchall()
         timing = [json.loads(row[0]) for row in timing_rows]
         measured = [row for row in timing if "disposition" in row]
         analysis_timing = {
             "completed": len(measured),
             "current_when_finished": sum(row["snapshot_current"] for row in measured),
+            "skipped_before_inference": sum("reason" in row and "inference_seconds" not in row for row in timing),
+            "model_decisions_measured": sum("model_calls" in row for row in timing),
+            "first_pass_successes": sum(row.get("first_pass_success", False) for row in timing),
+            "model_retries": sum(row.get("model_calls", 0) > 1 for row in timing),
             "queued": sum(row["disposition"] == "queued" for row in measured),
             "rejected": sum(row["disposition"] == "rejected" for row in measured),
             "recent": [row for row in timing if "bar" in row][:8],

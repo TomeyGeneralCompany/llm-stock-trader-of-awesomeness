@@ -3,13 +3,10 @@ LLM Strategy Streaming Backtest API - Server-Sent Events (SSE)
 Provides real-time progress updates and result streaming
 """
 
-import asyncio
 import json
-import os
 import queue
 import threading
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Generator, Optional
 
 import numpy as np
@@ -209,9 +206,6 @@ async def stream_llm_backtest(
                             "progress_callback": progress_callback,
                             # Enable backtest logging
                             "enable_logging": True,
-                            "log_path": os.path.join(
-                                "backend", "data", "backtest_logs.db"
-                            ),
                             "session_id": gates.run_id,
                         },
                     )

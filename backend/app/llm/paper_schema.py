@@ -37,7 +37,7 @@ def paper_decision_schema(context):
     plan=obj({"action":enum(["BUY","SELL","HOLD"]),"trigger":text(),"timeframe":text(),
               "required_position":enum(["flat","long","any"]),"prerequisite":text(),"reasoning":text()})
     risk=obj({"evidence":array(enum(evidence),1),"rationale":text(),"downside":text()})
-    execution=obj({"mode":enum(["now","wait"]),"evidence":array(enum(evidence),1),"rationale":text()})
+    execution=obj({"evidence":array(enum(evidence),1),"rationale":text()})
     explanation=obj({"observed_state":observed,"interpretation":text(),"forecast":forecast,
                      "conditional_actions":array(plan,1),"risk_assessment":risk,"execution":execution})
     watch=obj({"key":enum(numeric),"op":enum([">=","<="]),"threshold":number(-1e15,1e15),
