@@ -150,6 +150,7 @@ class IntelligenceController:
                     "direction": value["direction"], "expected_return": value["expected_return"],
                     "horizon_minutes": value["horizon_minutes"], "confidence": value["confidence"],
                     "invalidation": value["invalidation"][:80], "available": row["available"],
+                    "historical_reaction": value.get("historical_reaction"),
                     "evidence": [{key: citation[key] for key in ("chunk_id", "start", "end")} for citation in value["evidence"][:1]]}
             candidate = {**output, "catalysts": output["catalysts"] + [item]}
             if len(dump(candidate).encode()) <= max_bytes:
@@ -171,16 +172,34 @@ class IntelligenceController:
                 output = candidate
         return output
 
-    def rank(self, symbol, technical_score, now):
+    def rank(self, symbol, technical_score, now, *, bars=(), closing=None):
+        moment = datetime.fromisoformat(stamp(now))
         context = self.context(symbol, now)
-        score = technical_score
+        components = {"technical": technical_score, "catalyst": 0., "historical": 0., "liquidity": 0.}
+        # Closing availability matters for catalyst windows, but not for research.
+        minutes_left = max(0., (closing-moment).total_seconds()/60) if closing else None
+        if bars:
+            values = sorted(bar.close*bar.volume for bar in bars[-12:])
+            median_notional = values[len(values)//2]
+            components["liquidity"] = .01*min(1., math.log1p(median_notional)/math.log1p(1_000_000))
+        else:
+            median_notional = None
+        sample_count = 0
         for forecast in context["catalysts"]:
-            # Relevance, magnitude, confidence and freshness affect priority;
-            # a favorable story is not an execution signal.
             horizon = max(1, forecast["horizon_minutes"])
-            age = max(0., (datetime.fromisoformat(stamp(now))-datetime.fromisoformat(forecast["available"])).total_seconds())
-            score += min(1., abs(forecast["expected_return"])) * forecast["confidence"] * math.exp(-age/(horizon*60)) / math.sqrt(horizon)
-        return score, context
+            age = max(0., (moment-datetime.fromisoformat(forecast["available"])).total_seconds()/60)
+            freshness = math.exp(-age/horizon)
+            availability = min(1., minutes_left/horizon) if minutes_left is not None else 1.
+            components["catalyst"] += min(1., abs(forecast["expected_return"]))*forecast["confidence"]*freshness*availability/math.sqrt(horizon)
+            history = forecast.get("historical_reaction") or {}
+            n = history.get("sample_size",0)
+            if n and history.get("mean") is not None:
+                sample_count += n
+                # Shrink small samples toward zero; direction is still Qwen's decision.
+                components["historical"] += min(.15,abs(history["mean"]))*n/(n+10)*freshness*availability
+        context["ranking"] = {"components": components, "historical_samples": sample_count,
+                              "median_dollar_volume": median_notional, "minutes_remaining": minutes_left}
+        return sum(components.values()), context
 
     def paper_audit(self, report, now):
         """Mirror reported execution errors/results without modifying the paper DB."""

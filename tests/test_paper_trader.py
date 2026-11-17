@@ -201,3 +201,75 @@ def test_status_endpoint_uses_configured_read_only_ledger(tmp_path, monkeypatch)
     assert err.value.status_code == 404 and not path.exists()
     engine = PaperTrader(path, lambda ctx,_: response(ctx))
     assert status()["equity"] == 1
+
+
+
+def test_live_market_and_pending_fill_continue_during_inference(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release = Event(), Event()
+    a = day_bars("AAA", growth=.2)
+    b = day_bars("BBB", growth=.01)
+    now = [a[-1].end]
+    def decide(ctx, lessons):
+        if ctx["symbol"] == "BBB":
+            entered.set()
+            assert release.wait(10)
+        return response(ctx, "BUY", .5)
+
+    engine = PaperTrader(tmp_path/"paper.db", decide, max_candidates=1)
+    engine.tick(a+b, now[0])
+    assert "AAA" in engine.report()["state"]["pending"]
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(engine.analyze, now[0], time_source=lambda:now[0])
+        try:
+            assert entered.wait(5)
+            next_a, next_b = next_bar(a[-1]), next_bar(b[-1])
+            now[0] = next_a.end
+            state = engine.tick([next_a,next_b],now[0],analyze=False)
+            assert "AAA" in state["holdings"]
+            assert state["marks"]["BBB"]["end"] == next_b.end.astimezone(UTC).isoformat()
+        finally:
+            release.set()
+        assert future.result(timeout=5)==1
+    report = engine.report()
+    assert "BBB" not in report["state"]["pending"]
+    assert any(e["detail"].get("reason")=="newer stock snapshot arrived during inference" for e in report["recent_events"])
+    restored = PaperTrader(tmp_path/"paper.db",decide,max_candidates=1)
+    restored.tick([next_a,next_b],now[0],analyze=False)
+    assert restored.report()["events"]["fill"]==1
+
+
+def test_late_forecast_uses_post_decision_reference(tmp_path):
+    bars = day_bars()
+    engine=PaperTrader(tmp_path/"paper.db",lambda ctx,lessons:response(ctx),max_candidates=1)
+    ready = bars[-1].end+timedelta(minutes=2)
+    engine.tick(bars,bars[-1].end,time_source=lambda:ready)
+    base=next_bar(bars[-1],20)
+    engine.tick([base],base.end,analyze=False)
+    assert engine.report()["scored"]==0
+    later=next_bar(base,21)
+    engine.tick([later],later.end,analyze=False)
+    with engine.connect() as db:
+        result=json.loads(db.execute("SELECT body FROM outcomes").fetchone()[0])
+    assert result["actual_return"]==pytest.approx(.05)
+    assert result["forecast_available"]==ready.astimezone(UTC).isoformat()
+
+
+def test_forward_quote_fill_uses_ask_and_checks_fractional_eligibility(tmp_path):
+    from app.paper_market import Quote
+    bars=day_bars()
+    end=bars[-1].end
+    engine=PaperTrader(tmp_path/"quote.db",lambda ctx,lessons:response(ctx,"BUY"),slippage_bps=0)
+    engine.tick(bars,end)
+    quote=Quote("AAA",end+timedelta(seconds=1),end+timedelta(seconds=2),9.9,10.1,100,100,True)
+    engine.tick([],quote.received,analyze=False,quotes=[quote])
+    fill=next(e["detail"] for e in engine.report()["recent_events"] if e["kind"]=="fill")
+    assert fill["price"]==10.1 and fill["fill_method"]=="bid_ask"
+    assert fill["market_time"]==quote.time.isoformat()
+    no_fractions=PaperTrader(tmp_path/"whole.db",lambda ctx,lessons:response(ctx,"BUY"),slippage_bps=0)
+    no_fractions.tick(bars,end)
+    whole=Quote("AAA",quote.time,quote.received,9.9,10.1,100,100)
+    no_fractions.tick([],quote.received,analyze=False,quotes=[whole])
+    assert no_fractions.report()["events"]["unfilled"]==1

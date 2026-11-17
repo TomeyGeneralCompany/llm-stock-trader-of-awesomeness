@@ -38,6 +38,7 @@ def canonical(url):
 
 
 TABLES = {
+    "economic_observations": "source TEXT, series TEXT, observation_date TEXT, vintage_start TEXT, vintage_end TEXT, value REAL, acquired TEXT, version TEXT, PRIMARY KEY(source,series,observation_date,vintage_start,vintage_end,value)",
     "sources": "id TEXT PRIMARY KEY, body TEXT NOT NULL, next_due TEXT NOT NULL, last_success TEXT, failures INTEGER DEFAULT 0, error TEXT",
     "acquisition_jobs": "id INTEGER PRIMARY KEY, source TEXT, kind TEXT, payload TEXT, status TEXT, due TEXT, attempts INTEGER DEFAULT 0, lease TEXT, error TEXT, UNIQUE(source,kind,payload)",
     "securities": "symbol TEXT PRIMARY KEY, body TEXT, updated TEXT",
@@ -94,6 +95,7 @@ class IntelligenceStore:
                 db.execute(f"CREATE TABLE IF NOT EXISTS {name} ({fields})")
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS evidence_fts USING fts5(chunk UNINDEXED,body)")
             db.execute("CREATE INDEX IF NOT EXISTS evidence_availability ON document_versions(available)")
+            db.execute("CREATE INDEX IF NOT EXISTS economic_asof ON economic_observations(series,acquired,observation_date,vintage_start)")
             db.execute("CREATE INDEX IF NOT EXISTS observation_time ON market_observations(symbol,end,acquired)")
             db.execute("CREATE INDEX IF NOT EXISTS tasks_queue ON research_tasks(status,priority,updated)")
             if db.execute("PRAGMA user_version").fetchone()[0] < 1:

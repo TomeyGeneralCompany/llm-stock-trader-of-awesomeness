@@ -114,8 +114,8 @@ class SourceAcquisition:
         for index, source in enumerate(json.loads(self.config.INTELLIGENCE_FEEDS)):
             configured.append((source.get("id", f"rss_{index}"), source["url"], int(source.get("interval", 900 if source.get("type")=="corporate_ir" else 300)), "feed"))
         if self.config.FRED_API_KEY:
-            configured += [("fred", "https://api.stlouisfed.org/fred/releases/dates", 900, "fred"),
-                           ("alfred", "https://api.stlouisfed.org/fred/series/vintagedates", 900, "alfred")]
+            configured += [("fred", "https://api.stlouisfed.org/fred/series/observations", 900, "fred"),
+                           ("alfred", "https://api.stlouisfed.org/fred/series/observations", 900, "alfred")]
         with self.store.connect() as db:
             db.execute("INSERT OR IGNORE INTO sources(id,body,next_due) VALUES(?,?,?)", ("yahoo", dump({"url": "https://finance.yahoo.com", "kind": "market", "interval": 300}), "9999-01-01T00:00:00+00:00"))
             for ident, url, interval, kind in configured:
@@ -208,8 +208,14 @@ class SourceAcquisition:
             url += "?" + urlencode({"query": payload.get("query", "economy OR earnings OR regulation OR commodities"), "mode": "artlist", "format": "json", "maxrecords": 50})
         if job["kind"] in ("fred", "alfred"):
             params = {"api_key": self.config.FRED_API_KEY, "file_type": "json"}
+            series = self.config.INTELLIGENCE_FRED_SERIES
+            day = datetime.fromisoformat(now).date()
+            params.update(series_id=series, output_type=1, sort_order="desc", limit=500,
+                          offset=int(payload.get("offset", 0)),
+                          observation_start=payload.get("observation_start", (day-timedelta(days=90)).isoformat()))
             if job["kind"] == "alfred":
-                params["series_id"] = self.config.INTELLIGENCE_FRED_SERIES
+                params.update(realtime_start="1776-07-04", realtime_end=payload.get("realtime_end",day.isoformat()),
+                              observation_start=payload.get("observation_start",(day-timedelta(days=365*5)).isoformat()))
             url += "?" + urlencode(params)
         fetch = PublicFetcher(self.config.SEC_USER_AGENT, self.config.INTELLIGENCE_MAX_BYTES) if job["source"] == "sec" and isinstance(self.fetch, PublicFetcher) else self.fetch
         raw = fetch(url, domains)
@@ -260,8 +266,8 @@ class SourceAcquisition:
         elif job["kind"] == "gdelt":
             items = [{"url": item["url"], "title": item.get("title", ""), "text": item.get("title", ""), "published": None, "language": item.get("language", "und")} for item in json.loads(raw).get("articles", [])]
         elif job["kind"] in ("fred", "alfred"):
-            # Preserve release/vintage metadata as dated evidence; no fabricated economic values.
-            items = [{"url": payload["url"], "title": job["kind"] + " release/vintage metadata", "text": raw.decode(), "published": now, "language": "en"}]
+            self.archive_economic(job, payload, params, raw, now)
+            return
         else:
             items = parse_feed(raw, payload["url"], now)
         for item in items:
@@ -272,6 +278,43 @@ class SourceAcquisition:
             # A public source's own article is a structured follow-up, never a shell task.
             if job["kind"] in ("feed", "gdelt", "index") and urlsplit(item["url"]).scheme == "https":
                 self.store.enqueue(job["source"], "article", {"url": canonical(item["url"]), "published": item["published"], "title": item["title"], "summary_hash": __import__("hashlib").sha256(item["text"].encode()).hexdigest(), **({"task": payload["task"]} if payload.get("task") else {})}, now)
+
+    def archive_economic(self, job, payload, params, raw, now):
+        import math
+        from datetime import date
+        result = json.loads(raw)
+        rows = result.get("observations")
+        if not isinstance(rows,list) or result.get("error_code"):
+            raise ValueError("Economic provider did not return observations")
+        source, series = job["kind"], params["series_id"]
+        observations = []
+        for row in rows:
+            if row["value"] == ".":
+                continue
+            observed, start, end = (date.fromisoformat(row[key]).isoformat()
+                                     for key in ("date","realtime_start","realtime_end"))
+            value = float(row["value"])
+            if not math.isfinite(value) or start>end:
+                raise ValueError("Invalid economic observation")
+            observations.append((observed,start,end,value))
+        safe_query = {key: value for key,value in params.items() if key!="api_key"}
+        public = payload["url"]+"?"+urlencode(safe_query)
+        if observations:
+            text = "\n".join(f"{series} {day}: {value} (vintage {start} through {end})"
+                             for day,start,end,value in observations)
+            version = self.store.archive(url=public, publisher="Federal Reserve Bank of St. Louis",
+                title=f"{source.upper()} {series} observations",text=text,published=None,acquired=now,
+                payload=raw,chunk_chars=self.config.MEMORY_CHUNK_CHARS,language="en")
+            with self.store.connect() as db:
+                db.executemany("INSERT OR IGNORE INTO economic_observations VALUES(?,?,?,?,?,?,?,?)",
+                               [(source,series,*row,now,version) for row in observations])
+            self.link_followup(payload,version,now)
+        offset = params["offset"]+len(rows)
+        if rows and offset<int(result.get("count",offset)):
+            follow = {**payload, "offset":offset, "observation_start":params["observation_start"]}
+            if source=="alfred":
+                follow["realtime_end"] = params["realtime_end"]
+            self.store.enqueue(job["source"],source,follow,now)
 
     def link_followup(self, payload, version, now):
         if not payload.get("task"):
