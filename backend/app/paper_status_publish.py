@@ -15,7 +15,7 @@ from app.paper_trader import read_report
 
 def snapshot(paper, now, activity=None, trial=None):
     return {
-        "reported_at":now.isoformat(), "last_quote_received":paper.get("last_quote_received"),
+        "reported_at":now.isoformat(), "service_checked_at":paper.get("service_checked_at"), "last_quote_received":paper.get("last_quote_received"),
         "research_stage":activity, "equity":paper["equity"], "events":paper["events"],
         "recent_decisions":[{"symbol":row["symbol"],"bar":row["bar"],"action":row["decision"]["action"]}
                             for row in paper["latest_decisions"][:8]],
@@ -50,8 +50,6 @@ def publish(client, repository, branch, payload):
 
 def main():
     from app.config import settings
-    from app.intelligence.store import IntelligenceStore
-    from app.paper_trial import evaluation
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db",default=settings.PAPER_DB_PATH)
     parser.add_argument("--intelligence-db",default=settings.INTELLIGENCE_DB_PATH)
@@ -59,7 +57,36 @@ def main():
     parser.add_argument("--repo")
     parser.add_argument("--branch",default="main")
     parser.add_argument("--preview",action="store_true")
+    parser.add_argument("--interval",type=int,default=0,help="Seconds between refreshes; default is once")
     args=parser.parse_args()
+    if args.interval and args.interval < 60:
+        parser.error("Use a publishing interval of at least 60 seconds.")
+    if args.preview:
+        print(json.dumps(collect(args),indent=2))
+        return
+    token=os.environ.get("PAPER_STATUS_GITHUB_TOKEN")
+    if not args.repo or not token:
+        parser.error("Publishing requires --repo and PAPER_STATUS_GITHUB_TOKEN.")
+    import time
+    with httpx.Client(timeout=10,follow_redirects=False,trust_env=False,
+                      headers={"Authorization":f"Bearer {token}","Accept":"application/vnd.github+json"}) as client:
+        while True:
+            try:
+                publish(client,args.repo,args.branch,collect(args))
+            except ValueError:
+                raise
+            except (httpx.HTTPError,OSError) as exc:
+                if not args.interval:
+                    raise
+                print(f"Status refresh failed: {type(exc).__name__}",flush=True)
+            if not args.interval:
+                return
+            time.sleep(args.interval)
+
+
+def collect(args):
+    from app.intelligence.store import IntelligenceStore
+    from app.paper_trial import evaluation
     paper=read_report(args.db)
     activity=None
     if Path(args.intelligence_db).is_file():
@@ -70,16 +97,7 @@ def main():
         if row:
             activity={"time":row["stamp"],"stage":row["stage"]}
     trial=evaluation(json.loads(args.trial.read_text()),paper) if args.trial else None
-    payload=snapshot(paper,datetime.now(UTC),activity,trial)
-    if args.preview:
-        print(json.dumps(payload,indent=2))
-        return
-    token=os.environ.get("PAPER_STATUS_GITHUB_TOKEN")
-    if not args.repo or not token:
-        parser.error("Publishing requires --repo and PAPER_STATUS_GITHUB_TOKEN.")
-    with httpx.Client(timeout=10,follow_redirects=False,trust_env=False,
-                      headers={"Authorization":f"Bearer {token}","Accept":"application/vnd.github+json"}) as client:
-        publish(client,args.repo,args.branch,payload)
+    return snapshot(paper,datetime.now(UTC),activity,trial)
 
 
 if __name__=="__main__":

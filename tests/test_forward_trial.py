@@ -57,7 +57,7 @@ def test_trial_cannot_substitute_later_day_or_count_open_equity():
 
 
 def test_comparison_passes_identical_observations_to_all_policies(tmp_path):
-    bars=day_bars(n=32,growth=.01)
+    bars=day_bars(n=38,growth=.01)
     seen={"with":[],"without":[]}
     def local(context,lessons):
         seen["with" if lessons else "without"].append(context["asof"])

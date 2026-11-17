@@ -184,6 +184,7 @@ class PaperTrader:
                 CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS bars (symbol TEXT, end TEXT, body TEXT, PRIMARY KEY(symbol,end));
+                CREATE TABLE IF NOT EXISTS service_heartbeat (id INTEGER PRIMARY KEY, stamp TEXT);
                 CREATE TABLE IF NOT EXISTS ranked_snapshot (id INTEGER PRIMARY KEY, stamp TEXT, body TEXT);
                 CREATE TABLE IF NOT EXISTS bar_receipts (symbol TEXT, end TEXT, received TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS decisions (id INTEGER PRIMARY KEY, day TEXT, symbol TEXT, bar TEXT,
@@ -431,6 +432,7 @@ class PaperTrader:
                 if state["last_poll"] and now < utc(state["last_poll"]):
                     raise ValueError("Paper clock cannot move backwards")
                 self.ingest(db, bars, now)
+                db.execute("INSERT OR REPLACE INTO service_heartbeat VALUES (1,?)", (now.isoformat(),))
                 actual = [b for b in bars if b.end <= now and b.day == day and regular(b, *(self.close or (None, None)))]
                 if cursor is not None:
                     state["cursor"] = cursor
@@ -666,6 +668,7 @@ def read_report(path):
         equity = state["cash"] + state["unsettled"] + sum(max(0., p["shares"]*state["marks"][sym]["price"]*(1-config["cost"])-config["fee"])
                                                          for sym,p in state["holdings"].items())
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        heartbeat = db.execute("SELECT stamp FROM service_heartbeat WHERE id=1").fetchone() if "service_heartbeat" in tables else None
         ranking = db.execute("SELECT stamp,body FROM ranked_snapshot WHERE id=1").fetchone() if "ranked_snapshot" in tables else None
         return {"mode": config["mode"], "challenge": config["challenge"], "profile": config, "state": state,
                 "equity": equity, "buying_power_model": "immediate paper reuse" if config["reuse_proceeds"] else "next-session settlement",
@@ -675,6 +678,7 @@ def read_report(path):
                 "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0],
                 "latest_decisions": [{"symbol": sym, "bar": bar, "decision": json.loads(body)}
                     for sym,bar,body in db.execute("SELECT symbol,bar,body FROM decisions ORDER BY id DESC LIMIT 8")],
+                "service_checked_at": heartbeat[0] if heartbeat else None,
                 "last_quote_received": db.execute("SELECT MAX(received) FROM bar_receipts").fetchone()[0]
                     if "bar_receipts" in tables else None,
                 "ranked_opportunities": json.loads(ranking[1]) if ranking else [],

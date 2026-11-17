@@ -91,8 +91,9 @@ def run_live(engine, args, intelligence):
                 watch = []
                 if window or args.command == "once":
                     watch, cursor = engine.watchlist(now)
-                    report = engine.report()
-                    portfolio = set(report["state"]["holdings"]) | set(report["state"]["pending"])
+                    with engine.connect() as db:
+                        state = engine.state(db)
+                    portfolio = set(state["holdings"]) | set(state["pending"])
                     # Process existing positions and orders before the broader scan.
                     ingest(sorted(portfolio), now, quotes=journal.poll())
                     if not universe or refreshed != local.date():
