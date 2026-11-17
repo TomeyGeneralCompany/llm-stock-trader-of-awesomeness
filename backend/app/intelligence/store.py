@@ -256,12 +256,18 @@ class IntelligenceStore:
 
     def overview(self, now):
         with self.connect() as db:
-            counts = {name: db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] for name in TABLES}
+            present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            counts = {name: db.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0] if name in present else 0 for name in TABLES}
             sources = [dict(r) for r in db.execute("SELECT id,last_success,next_due,failures,error FROM sources")]
             coverage = [dict(r) for r in db.execute("SELECT status,COUNT(*) count FROM coverage GROUP BY status")]
+            details = [dict(r) for r in db.execute("SELECT symbol,kind,status,earliest,latest FROM coverage ORDER BY last_success DESC LIMIT 25")]
+            details += [dict(r) for r in db.execute("""SELECT symbol,interval kind,session,'observed' status,
+                MIN(end) earliest,MAX(end) latest FROM market_observations WHERE symbol IN
+                (SELECT symbol FROM coverage ORDER BY last_success DESC LIMIT 25)
+                GROUP BY symbol,interval,session ORDER BY latest DESC LIMIT 25""")]
             tasks = [dict(r) for r in db.execute("SELECT id,question,status,priority,steps,error FROM research_tasks ORDER BY priority DESC,updated DESC LIMIT 20")]
             forecasts = [dict(r) for r in db.execute("SELECT id,symbol,available,target,status,body FROM market_forecasts ORDER BY available DESC LIMIT 20")]
             lessons = [dict(r) for r in db.execute("SELECT symbol,available,body FROM learned_lessons ORDER BY available DESC LIMIT 20")]
             logs = [dict(r) for r in db.execute("SELECT * FROM intelligence_events ORDER BY id DESC LIMIT 30")]
-        return {"asof": stamp(now), "counts": counts, "sources": sources, "coverage": coverage,
+        return {"asof": stamp(now), "counts": counts, "sources": sources, "coverage": coverage, "coverage_details": details,
                 "investigations": tasks, "forecasts": forecasts, "lessons": lessons, "activity": logs}

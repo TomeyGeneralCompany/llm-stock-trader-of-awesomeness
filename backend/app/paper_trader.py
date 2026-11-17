@@ -158,13 +158,14 @@ class PaperTrader:
     """Single-writer SQLite event ledger; atomic fills, state, decisions and outcomes."""
     def __init__(self, path, decide=None, *, challenge=True, initial=10000.0,
                  spread_bps=10, slippage_bps=5, fee=0.0, min_notional=.01,
-                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward", intelligence=None, use_memory=True):
+                 reuse_proceeds=None, max_candidates=3, close=None, mode="forward", intelligence=None, use_memory=True, runtime=None):
         self.intelligence = intelligence
         self.path = str(path)
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = FileLock(self.path + ".lock", timeout=10)
         self.analysis_lock = threading.Lock()
         self.use_memory = use_memory
+        self.runtime = runtime
         self.decide = decide or LocalDecision()
         self.challenge = challenge
         self.initial = START if challenge else number(initial, .01, 1e12, "capital")
@@ -183,6 +184,7 @@ class PaperTrader:
                 CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY, body TEXT);
                 CREATE TABLE IF NOT EXISTS bars (symbol TEXT, end TEXT, body TEXT, PRIMARY KEY(symbol,end));
+                CREATE TABLE IF NOT EXISTS ranked_snapshot (id INTEGER PRIMARY KEY, stamp TEXT, body TEXT);
                 CREATE TABLE IF NOT EXISTS bar_receipts (symbol TEXT, end TEXT, received TEXT, PRIMARY KEY(symbol,end));
                 CREATE TABLE IF NOT EXISTS decisions (id INTEGER PRIMARY KEY, day TEXT, symbol TEXT, bar TEXT,
                     submitted TEXT, body TEXT, context TEXT, UNIQUE(day,symbol,bar));
@@ -254,7 +256,7 @@ class PaperTrader:
         seen = db.execute("SELECT 1 FROM bars WHERE end=? LIMIT 1", (expected.isoformat(),)).fetchone()
         complete = complete and bool(seen)
         equity = self.equity(state)
-        summary = dict(day=state["day"], start=self.initial if self.challenge else state.get("opening_equity", self.initial),
+        summary = dict(day=state["day"], runtime=state.get("runtime"), runtime_changed=state.get("runtime_changed",False), start=self.initial if self.challenge else state.get("opening_equity", self.initial),
                        equity=equity, cash=state["cash"], unsettled=state["unsettled"], holdings=state["holdings"],
                        goal=OBJECTIVE if self.challenge else None, complete=complete,
                        achieved=bool(state["goal_reached_at"]) if self.challenge else None,
@@ -272,6 +274,7 @@ class PaperTrader:
         self.end_session(db, state, stamp)
         if self.challenge:
             cursor = state["cursor"]
+            state.clear()
             state.update(self.new_state())
             state["cursor"] = cursor
         else:
@@ -372,7 +375,8 @@ class PaperTrader:
                            error=expected-actual, direction_correct=(expected > 0) == (actual > 0),
                            action=decision["action"], forecast=decision["explanation"]["forecast"]["scenario"][:180],
                            phase=context["trend"]["market_phase"])
-            db.execute("INSERT INTO outcomes VALUES(?,?,?)", (ident, observed, dump(outcome)))
+            outcome["observation_bar"] = observed
+            db.execute("INSERT INTO outcomes VALUES(?,?,?)", (ident, stamp.isoformat(), dump(outcome)))
             self.event(db, {"day": bar.day}, stamp, "forecast_scored", {"decision_id": ident, **outcome})
 
     def lessons(self, db, now, symbol):
@@ -443,6 +447,10 @@ class PaperTrader:
                     if (order and quote.time.astimezone(EASTERN).date().isoformat() == day
                             and utc(order["submitted"]) < quote.time < self.closing(day) and quote.received <= now):
                         eligible_quotes.setdefault(quote.symbol, quote)
+                if self.runtime is not None:
+                    if state.get("runtime") not in (None,self.runtime):
+                        state["runtime_changed"] = True
+                    state["runtime"] = self.runtime
                 latest = {}
                 for bar in actual:
                     if bar.symbol not in latest or bar.end > latest[bar.symbol].end:
@@ -502,7 +510,7 @@ class PaperTrader:
             self.analysis_lock.release()
 
     def _analyze(self, now, time_source, limit):
-        now = utc(time_source()) if time_source else utc(now)
+        now = utc(now)
         day = now.astimezone(EASTERN).date().isoformat()
         completed = 0
         with self.lock, self.connect() as db:
@@ -513,6 +521,10 @@ class PaperTrader:
             if now >= closing:
                 return 0
             ranked = self.latest_candidates(db, state, now)
+            ranking_report = [{"symbol": x["symbol"], "bar": x["asof"], "score": x["score"],
+                               **x.get("intelligence", {}).get("ranking", {}),
+                               "catalysts": x.get("intelligence", {}).get("catalysts", [])} for x in ranked[:20]]
+            db.execute("INSERT OR REPLACE INTO ranked_snapshot VALUES (1,?,?)", (now.isoformat(), dump(ranking_report)))
             # Prioritize open positions and unresolved conditional plans; reserve
             # capacity for discovery and order candidates by market score.
             prior = {}
@@ -571,11 +583,6 @@ class PaperTrader:
             try:
                 with stage_resources("ANALYZE"):
                     inference_started = time.monotonic()
-                    if time_source and utc(time_source())-utc(candidate["asof"]) >= timedelta(minutes=15):
-                        with self.lock, self.connect() as db:
-                            self.event(db, self.state(db), utc(time_source()), "analysis_skipped",
-                                       {"symbol": symbol, "reason": "snapshot expired in inference queue"})
-                        continue
                     decision = check_decision(self.decide(context, lessons), context)
             except Exception as exc:
                 with self.lock, self.connect() as db:
@@ -658,7 +665,9 @@ def read_report(path):
         state = json.loads(db.execute("SELECT body FROM state WHERE id=1").fetchone()[0])
         equity = state["cash"] + state["unsettled"] + sum(max(0., p["shares"]*state["marks"][sym]["price"]*(1-config["cost"])-config["fee"])
                                                          for sym,p in state["holdings"].items())
-        return {"mode": config["mode"], "challenge": config["challenge"], "state": state,
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        ranking = db.execute("SELECT stamp,body FROM ranked_snapshot WHERE id=1").fetchone() if "ranked_snapshot" in tables else None
+        return {"mode": config["mode"], "challenge": config["challenge"], "profile": config, "state": state,
                 "equity": equity, "buying_power_model": "immediate paper reuse" if config["reuse_proceeds"] else "next-session settlement",
                 "sessions": [json.loads(r[0]) for r in db.execute("SELECT body FROM sessions ORDER BY day")],
                 "events": dict(db.execute("SELECT kind,count(*) FROM events GROUP BY kind")),
@@ -666,8 +675,10 @@ def read_report(path):
                 "scored": db.execute("SELECT count(*) FROM outcomes").fetchone()[0],
                 "latest_decisions": [{"symbol": sym, "bar": bar, "decision": json.loads(body)}
                     for sym,bar,body in db.execute("SELECT symbol,bar,body FROM decisions ORDER BY id DESC LIMIT 8")],
-                "last_quote_received": (db.execute("SELECT MAX(received) FROM bar_receipts").fetchone()[0]
-                    if db.execute("SELECT 1 FROM sqlite_master WHERE name='bar_receipts'").fetchone() else None),
+                "last_quote_received": db.execute("SELECT MAX(received) FROM bar_receipts").fetchone()[0]
+                    if "bar_receipts" in tables else None,
+                "ranked_opportunities": json.loads(ranking[1]) if ranking else [],
+                "ranked_at": ranking[0] if ranking else None,
                 "recent_events": [{"time": stamp, "kind": kind, "detail": json.loads(body)}
                     for stamp,kind,body in db.execute("SELECT stamp,kind,body FROM events ORDER BY id DESC LIMIT 15")]}
 
@@ -694,6 +705,8 @@ def replay(engine, bars, warmup_sessions=0):
             groups[bar.end].append(bar)
     for end, group in sorted(groups.items()):
         engine.tick(group, end)
+    last = max(groups)
+    engine.tick([],last,finish=True,analyze=False)
     return engine.report()
 
 
@@ -748,6 +761,8 @@ def main():
         print(json.dumps(replay(engine, read_replay(args.csv), args.warmup_sessions), indent=2))
         return
     from app.paper_live import run_live
+    from app.paper_trial import runtime_identity
+    engine.runtime = runtime_identity(settings.OLLAMA_MODEL, args.quotes)
     run_live(engine, args, intelligence)
 
 

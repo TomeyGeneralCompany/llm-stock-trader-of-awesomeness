@@ -138,7 +138,7 @@ class IntelligenceController:
         now = stamp(now)
         with self.store.connect() as db:
             rows = db.execute("""SELECT id,body,available FROM market_forecasts
-                WHERE symbol=? AND available<=? AND target>=? AND status='pending' ORDER BY available DESC LIMIT 3""", (symbol, now, now)).fetchall()
+                WHERE symbol=? AND available<=? AND target>=? ORDER BY available DESC LIMIT 3""", (symbol, now, now)).fetchall()
             relations = db.execute("""SELECT a.name subject,r.predicate,b.name object,r.evidence,r.available
                 FROM entity_relationships r JOIN entities a ON r.subject=a.id JOIN entities b ON r.object=b.id
                 WHERE r.available<=? AND (a.symbol=? OR b.symbol=? OR a.name=? OR b.name=?)
@@ -240,5 +240,11 @@ class IntelligenceController:
             for metric in ("mae", "directional_accuracy", "brier"):
                 group[metric] /= group["n"]
         result["accuracy"] = list(groups.values())
+        with self.store.connect() as db:
+            days = db.execute("""SELECT substr(observed,1,10) day, COUNT(*),
+                AVG(json_extract(body,'$.absolute_error')), AVG(json_extract(body,'$.direction_correct')),
+                AVG(json_extract(body,'$.brier')) FROM forecast_outcomes WHERE observed<=?
+                GROUP BY day ORDER BY day DESC LIMIT 30""", (now,)).fetchall()
+        result["accuracy_over_time"] = [dict(day=row[0],n=row[1],mae=row[2],directional_accuracy=row[3],brier=row[4]) for row in reversed(days)]
         result["execution_boundary"] = "Read-only intelligence; orders remain under the existing paper controller."
         return result
