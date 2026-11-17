@@ -1,4 +1,4 @@
-name: Real Qwen intelligence probe
+name: Qwen paper trader with real market data
 on:
   workflow_dispatch:
   pull_request:
@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 jobs:
-  grounded-probe:
+  observed-market:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: backend
@@ -37,29 +37,21 @@ jobs:
           done
           if [ "$ready" != true ]; then cat "$RUNNER_TEMP/ollama.log"; exit 1; fi
           ollama pull qwen3:4b
-      - name: Research, decide, observe and learn
+      - name: Fetch market data, ask Qwen and replay paper execution
         shell: bash
         run: |
           set -o pipefail
-          mkdir -p intelligence-probe
-          uv run python -m app.intelligence.probe --network 2>&1 | tee intelligence-probe/execution.log
-          cat intelligence-probe/summary.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve complete evidence and model diagnostics
+          mkdir -p market-check
+          uv run --locked python -m app.paper_market_check --output market-check 2>&1 | tee market-check/execution.log
+      - name: Save market data provenance and diagnostics
         if: always()
         run: |
-          mkdir -p intelligence-probe
-          if [ -f "$RUNNER_TEMP/ollama.log" ]; then cp "$RUNNER_TEMP/ollama.log" intelligence-probe/ollama.log; fi
-          if [ -f intelligence-probe/fixture.sqlite3 ]; then
-            python - <<'PY'
-          import sqlite3
-          db=sqlite3.connect('intelligence-probe/fixture.sqlite3')
-          for row in db.execute("SELECT status,error,response FROM research_runs"):
-              print(row)
-          PY
-          fi
+          mkdir -p market-check
+          if [ -f "$RUNNER_TEMP/ollama.log" ]; then cp "$RUNNER_TEMP/ollama.log" market-check/ollama.log; fi
+          if [ -f market-check/summary.md ]; then cat market-check/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: intelligence-probe
-          path: intelligence-probe/
+          name: observed-market-paper-check
+          path: market-check/
           retention-days: 7
