@@ -49,21 +49,39 @@ class QuoteJournal:
 
 
 def run_live(engine, args, intelligence):
-    universe, refreshed, seen = [], None, {}
+    universe, refreshed = [], None
+    latest, retries = {}, {}
+    runtime_day = None
     journal = QuoteJournal(args.quotes)
 
     def ingest(symbols, now, cursor=None, quotes=()):
         bars = []
-        cold = [symbol for symbol in symbols if now-seen.get(symbol, datetime.min.replace(tzinfo=UTC)) > timedelta(hours=18)]
-        warm = [symbol for symbol in symbols if symbol not in cold]
-        for group, period in ((cold,"5d"),(warm,"1d")):
-            if group:
-                try:
-                    bars.extend(yahoo_bars(group, now, period=period))
-                except Exception as exc:
-                    print("Market batch failed: "+str(exc), flush=True)
-        for bar in bars:
-            seen[bar.symbol] = now
+        unknown = [symbol for symbol in symbols if symbol not in latest]
+        if unknown:
+            with engine.connect() as db:
+                for symbol in unknown:
+                    row = db.execute("SELECT MAX(end) FROM bars WHERE symbol=?", (symbol,)).fetchone()
+                    latest[symbol] = utc(row[0]) if row[0] else None
+        due = [symbol for symbol in symbols if symbol not in retries or retries[symbol]<=now]
+        warm = [symbol for symbol in due if latest[symbol] and now-latest[symbol]<=timedelta(hours=18)]
+        cold = [symbol for symbol in due if symbol not in warm]
+        for group, start in ((cold,None),(warm,min((latest[symbol] for symbol in warm),default=None))):
+            if not group:
+                continue
+            try:
+                pulled = yahoo_bars(group, now, start=start-timedelta(minutes=5) if start else None)
+            except Exception as exc:
+                print("Market batch failed: "+str(exc), flush=True)
+                for symbol in group:
+                    retries[symbol] = now+timedelta(minutes=2)
+                continue
+            bars.extend(pulled)
+            returned = {bar.symbol for bar in pulled}
+            for symbol in set(group)-returned:
+                retries[symbol] = now+timedelta(minutes=2)
+            for bar in pulled:
+                latest[bar.symbol] = max(latest[bar.symbol] or bar.end,bar.end)
+                retries.pop(bar.symbol,None)
         engine.tick(bars, clock(), cursor=cursor, analyze=False, quotes=quotes)
 
     def analyze(watch, window):
@@ -90,6 +108,11 @@ def run_live(engine, args, intelligence):
                     future = None
                 watch = []
                 if window or args.command == "once":
+                    if runtime_day != local.date():
+                        from app.config import settings
+                        from app.paper_trial import runtime_identity
+                        engine.runtime = runtime_identity(settings.OLLAMA_MODEL,args.quotes,args)
+                        runtime_day = local.date()
                     watch, cursor = engine.watchlist(now)
                     with engine.connect() as db:
                         state = engine.state(db)

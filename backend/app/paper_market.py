@@ -149,14 +149,15 @@ def normalize_history(frame, symbol, now):
     return bars
 
 
-def yahoo_bars(symbols, now, *, period="5d"):
+def yahoo_bars(symbols, now, *, period="5d", start=None):
     """Bounded batches; missing symbols remain missing, never synthesized."""
     result = []
     for offset in range(0, len(symbols), 32):
         batch = symbols[offset:offset + 32]
         if not batch:
             continue
-        frame = yf.download(batch, period=period, interval="5m", group_by="ticker",
+        history = {"start": start} if start is not None else {"period": period}
+        frame = yf.download(batch, **history, interval="5m", group_by="ticker",
                             auto_adjust=False, prepost=False, progress=False,
                             threads=False, timeout=20)
         for symbol in batch:

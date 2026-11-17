@@ -373,7 +373,7 @@ class PaperTrader:
             expected = decision["expected_return"]
             outcome = dict(symbol=symbol, predicted_return=expected, actual_return=actual,
                            forecast_available=submitted, reference_bar=origin,
-                           error=expected-actual, direction_correct=(expected > 0) == (actual > 0),
+                           error=expected-actual, direction_correct=((expected>0)-(expected<0)) == ((actual>0)-(actual<0)),
                            action=decision["action"], forecast=decision["explanation"]["forecast"]["scenario"][:180],
                            phase=context["trend"]["market_phase"])
             outcome["observation_bar"] = observed
@@ -765,8 +765,6 @@ def main():
         print(json.dumps(replay(engine, read_replay(args.csv), args.warmup_sessions), indent=2))
         return
     from app.paper_live import run_live
-    from app.paper_trial import runtime_identity
-    engine.runtime = runtime_identity(settings.OLLAMA_MODEL, args.quotes)
     run_live(engine, args, intelligence)
 
 
