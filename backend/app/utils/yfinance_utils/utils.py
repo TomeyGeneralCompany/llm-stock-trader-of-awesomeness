@@ -12,12 +12,6 @@ from typing import Dict, Optional, Union
 import pandas as pd
 import yfinance as yf
 from pydantic import ValidationError
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 log = logging.getLogger(__name__)
 
